@@ -115,6 +115,10 @@ enum BlockRenderer {
     /// rounded pill behind it (an attributed `.backgroundColor` is a tight,
     /// square rect with no breathing room).
     static let inlineCodeKey = NSAttributedString.Key("knopoInlineCode")
+    /// Marks a `#tag` run so `RenderedTextView` draws its pill the same way as
+    /// inline code (clamped to the run's line height), instead of a
+    /// `.backgroundColor` that fills the whole line fragment.
+    static let tagKey = NSAttributedString.Key("knopoTag")
     /// Ordinal of an image token within one top-level block render. Attached to
     /// the object-replacement character so the row view can rewrite its source.
     static let imageIndexKey = NSAttributedString.Key("knopoImageIndex")
@@ -631,10 +635,13 @@ enum BlockRenderer {
                     ))
                 }
             case .tag(let name):
+                // No `.backgroundColor`: `RenderedTextView` draws the tag pill
+                // (keyed on `tagKey`), clamped to the run's line height so a tall
+                // inline image on the same line can't balloon it.
                 out.append(NSAttributedString(string: "#\(name)", attributes: attrs([
                     .link: KnopoURL.tag(name),
                     .foregroundColor: BlockRenderer.tagColor,
-                    .backgroundColor: BlockRenderer.tagBackground,
+                    BlockRenderer.tagKey: true,
                 ])))
             case .embed(let target):
                 // Read-only transclusion of a subtree/page (§7.6). The host

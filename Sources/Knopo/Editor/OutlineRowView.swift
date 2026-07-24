@@ -491,25 +491,30 @@ final class RenderedTextView: NSTextView {
         }
     }
 
-    // MARK: Inline-code pill
+    // MARK: Inline pills (code and tags)
 
     override func draw(_ dirtyRect: NSRect) {
-        drawInlineCodePills()
+        // Behind the glyphs: inline-code and tag backgrounds.
+        drawPills(key: BlockRenderer.tagKey, fill: BlockRenderer.tagBackground)
+        drawPills(key: BlockRenderer.inlineCodeKey, fill: .secondarySystemFill)
         super.draw(dirtyRect)
     }
 
-    /// A padded, rounded box behind each inline `code` run (keyed on
-    /// `BlockRenderer.inlineCodeKey`) — TextKit 2's `.backgroundColor` is a
-    /// tight square rect with no breathing room, so we draw our own.
-    private func drawInlineCodePills() {
+    /// A padded, rounded box behind each run marked with `key` (inline code or a
+    /// tag) — TextKit 2's `.backgroundColor` is a tight square rect with no
+    /// breathing room, and worse, it fills the whole line fragment, so on a line
+    /// made tall by a big inline image the background balloons. We draw our own,
+    /// clamped to the run's own line height and anchored to its baseline band, so
+    /// it hugs the text and stays put whatever the line's height (matches how a
+    /// browser paints an inline background, à la Logseq).
+    private func drawPills(key: NSAttributedString.Key, fill: NSColor) {
         guard let tlm = textLayoutManager,
               let tcs = textContentStorage,
               let storage = textStorage, storage.length > 0 else { return }
-        // Collect the code ranges first so rows without code bail out cheaply.
+        // Collect the marked ranges first so rows without any bail out cheaply.
         var ranges: [NSRange] = []
         storage.enumerateAttribute(
-            BlockRenderer.inlineCodeKey,
-            in: NSRange(location: 0, length: storage.length)
+            key, in: NSRange(location: 0, length: storage.length)
         ) { value, range, _ in
             if value != nil, range.length > 0 { ranges.append(range) }
         }
@@ -519,8 +524,9 @@ final class RenderedTextView: NSTextView {
         // place them at the previous content's offsets.
         tlm.ensureLayout(for: tlm.documentRange)
         let origin = textContainerOrigin
-        NSColor.secondarySystemFill.setFill()
+        fill.setFill()
         for range in ranges {
+            let (lineHeight, spacing) = pillMetrics(in: storage, at: range.location)
             guard let start = tcs.location(tcs.documentRange.location, offsetBy: range.location),
                   let end = tcs.location(start, offsetBy: range.length),
                   let textRange = NSTextRange(location: start, end: end) else { continue }
@@ -530,23 +536,70 @@ final class RenderedTextView: NSTextView {
             // segments (the mono code and the proportional padding split at the
             // font boundary); merge each line's into one rect before filling, or
             // the translucent fill would darken where overlapping pills seam.
-            var lineRects: [CGRect] = []
-            tlm.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
+            // Track whether each line carries any non-whitespace: a wrap can
+            // strand a run's leading/trailing padding space alone on a line
+            // (even the tall image line), and that line shouldn't get a pill.
+            var lines: [(rect: CGRect, content: Bool)] = []
+            tlm.enumerateTextSegments(in: textRange, type: .standard, options: []) { segRange, frame, _, _ in
                 guard frame.width > 0 else { return true }
-                if let i = lineRects.firstIndex(where: {
-                    abs($0.minY - frame.minY) < 1 && abs($0.height - frame.height) < 1
+                var content = true
+                if let segRange, let r = self.nsRange(for: segRange, in: tcs) {
+                    content = storage.attributedSubstring(from: r).string.contains { !$0.isWhitespace }
+                }
+                if let i = lines.firstIndex(where: {
+                    abs($0.rect.minY - frame.minY) < 1 && abs($0.rect.height - frame.height) < 1
                 }) {
-                    lineRects[i] = lineRects[i].union(frame)
+                    lines[i].rect = lines[i].rect.union(frame)
+                    lines[i].content = lines[i].content || content
                 } else {
-                    lineRects.append(frame)
+                    lines.append((frame, content))
                 }
                 return true
             }
-            for rect in lineRects {
-                let pill = rect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -1, dy: -1)
+            for line in lines where line.content {
+                let rect = line.rect
+                // A `.standard` segment is the full line-fragment height. Only a
+                // line made tall by something like a big inline image exceeds a
+                // normal fragment (line height + inter-line spacing); there,
+                // clamp the pill to the run's own line height and anchor it to
+                // the baseline band (bottom), where the text sits. Every normal
+                // line — including wrapped and high-spacing ones — is left
+                // exactly as it was, so this can't shift existing pills.
+                let hugged: CGRect
+                if rect.height > lineHeight + spacing + 2 {
+                    hugged = CGRect(x: rect.minX, y: rect.maxY - lineHeight,
+                                    width: rect.width, height: lineHeight)
+                } else {
+                    hugged = rect
+                }
+                let pill = hugged.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -1, dy: -1)
                 NSBezierPath(roundedRect: pill, xRadius: 4, yRadius: 4).fill()
             }
         }
+    }
+
+    /// A run's normal line height and inter-line spacing, from the block's
+    /// pinned paragraph style (falling back to the run font's own metrics).
+    /// Used to tell a normal fragment from an image-inflated one.
+    private func pillMetrics(in storage: NSTextStorage, at location: Int) -> (CGFloat, CGFloat) {
+        if let paragraph = storage.attribute(.paragraphStyle, at: location, effectiveRange: nil)
+            as? NSParagraphStyle, paragraph.maximumLineHeight > 0 {
+            return (paragraph.maximumLineHeight, paragraph.lineSpacing)
+        }
+        if let font = storage.attribute(.font, at: location, effectiveRange: nil) as? NSFont {
+            return (ceil(font.ascender - font.descender), 0)
+        }
+        return (20, 0)
+    }
+
+    /// Character range in the text storage for a TextKit 2 segment range, so a
+    /// segment can be inspected for whitespace-only content.
+    private func nsRange(for textRange: NSTextRange, in tcs: NSTextContentStorage) -> NSRange? {
+        let location = tcs.offset(from: tcs.documentRange.location, to: textRange.location)
+        let length = tcs.offset(from: textRange.location, to: textRange.endLocation)
+        guard location != NSNotFound, length > 0,
+              location + length <= (textStorage?.length ?? 0) else { return nil }
+        return NSRange(location: location, length: length)
     }
 
     // MARK: Clicks
