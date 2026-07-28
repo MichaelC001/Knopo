@@ -51,7 +51,8 @@ public final class CacheDB {
     /// existing cache, whose rows were derived by older code, is force-rebuilt
     /// on next open. v2: recognize Logseq `yyyy_MM_dd` journal filenames.
     /// v3: canonicalize date page keys to ISO (cross-spelling journal refs).
-    public static let indexVersion: Int = 5
+    /// v6: recognize the friendly date form `Jun 10th, 2026` as a journal day.
+    public static let indexVersion: Int = 6
 
     /// The index version this cache was last built with (PRAGMA user_version,
     /// independent of the schema migrator). 0 on a fresh/old database.

@@ -308,7 +308,29 @@ import Foundation
     @Test func dateKeysCanonicalize() {
         expectEqual(PageName.key("2026_06_10"), "2026-06-10")
         expectEqual(PageName.key("2026-06-10"), "2026-06-10")
-        expectEqual(PageName.key("Project X"), "project x") // non-dates unchanged
+        // The friendly display / Logseq reference form folds to the same day.
+        expectEqual(PageName.key("Jun 10th, 2026"), "2026-06-10")
+        expectEqual(PageName.key("June 10th, 2026"), "2026-06-10") // full month name
+        expectEqual(PageName.key("Mar 1st, 2026"), "2026-03-01")   // ordinal suffix
+        expectEqual(PageName.key("Dec 23rd, 2025"), "2025-12-23")
+        expectEqual(PageName.key("Project X"), "project x")        // non-dates unchanged
+        expectNil(JournalDate(pageName: "Mar 32nd, 2026"))         // invalid day rejected
+        expectNil(JournalDate(pageName: "Foo 10th, 2026"))         // not a month
+    }
+
+    @Test func friendlyReferenceResolvesToJournal() throws {
+        // A note references a journal day in Logseq's friendly form; the day has
+        // a real (underscore-named) file. The reference resolves to that day
+        // rather than becoming a separate stub, and the backlink lights up.
+        let store = try makeGraph(
+            ["Note": "- met her on [[Jun 10th, 2026]]\n"],
+            journals: ["2026_06_10": "- the imported day\n"]
+        )
+        expectEqual(try store.cache.backlinks(of: PageName.key("Jun 10th, 2026")).count, 1)
+        expectEqual(try store.cache.stubPageNames(), [])
+        let day = store.page(named: "Jun 10th, 2026")
+        expectTrue(day.fileExists)
+        expectEqual(day.blocks.first?.content, "the imported day")
     }
 
     @Test func persistBlockIDWritesIdProperty() throws {

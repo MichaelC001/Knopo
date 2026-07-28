@@ -19,17 +19,45 @@ public struct JournalDate: Equatable, Hashable, Comparable, Sendable {
         self.year = year; self.month = month; self.day = day
     }
 
-    /// Parses a journal page name: ISO `2026-06-10`, or Logseq's default
-    /// `2026_06_10` (underscore) filename form. Strict: zero-padded, valid date.
+    /// Parses a journal page name in any recognized spelling: ISO `2026-06-10`,
+    /// Logseq's underscore filename `2026_06_10`, or the friendly display /
+    /// Logseq reference form `Jun 10th, 2026`. All fold to the same day, so a
+    /// `[[Jun 10th, 2026]]` reference resolves to the journal file. Strict about
+    /// validity (zero-padded numbers, real calendar date).
     public init?(pageName: String) {
         let parts = pageName.replacingOccurrences(of: "_", with: "-")
             .components(separatedBy: "-")
-        guard parts.count == 3,
-              parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
-              let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]),
-              parts.allSatisfy({ $0.allSatisfy(\.isNumber) })
+        if parts.count == 3,
+           parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+           let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]),
+           parts.allSatisfy({ $0.allSatisfy(\.isNumber) }) {
+            self.init(year: y, month: m, day: d)
+        } else if let f = Self.parseFriendly(pageName) {
+            self.init(year: f.year, month: f.month, day: f.day)
+        } else {
+            return nil
+        }
+    }
+
+    /// Parses the display form `Jun 10th, 2026` (also Logseq's default journal
+    /// reference format) back to its date. Month is case-insensitive and may be
+    /// abbreviated or full; the ordinal suffix and comma are optional.
+    static func parseFriendly(_ s: String) -> (year: Int, month: Int, day: Int)? {
+        let months = ["jan", "feb", "mar", "apr", "may", "jun",
+                      "jul", "aug", "sep", "oct", "nov", "dec"]
+        let tokens = s.lowercased()
+            .replacingOccurrences(of: ",", with: " ")
+            .split(separator: " ").map(String.init)
+        guard tokens.count == 3,
+              let month = months.firstIndex(where: { tokens[0].hasPrefix($0) }).map({ $0 + 1 })
         else { return nil }
-        self.init(year: y, month: m, day: d)
+        let digits = tokens[1].prefix { $0.isNumber }
+        let suffix = String(tokens[1].dropFirst(digits.count))
+        guard let day = Int(digits),
+              suffix.isEmpty || ["st", "nd", "rd", "th"].contains(suffix),
+              tokens[2].count == 4, let year = Int(tokens[2])
+        else { return nil }
+        return (year, month, day)
     }
 
     public init(date: Date, calendar: Calendar = .current) {
