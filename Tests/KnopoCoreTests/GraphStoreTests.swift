@@ -288,6 +288,23 @@ import Foundation
         expectEqual(try store.cache.stubPageNames(), [])
     }
 
+    @Test func nativeJournalWinsOverLogseqDuplicate() throws {
+        // The same day exists as both a native `2026-06-10.md` and a Logseq
+        // `2026_06_10.md`. The native file wins: the day is one page keyed on the
+        // ISO date, navigating it loads the native content, and the Logseq file is
+        // ignored (not indexed as a second page) but left untouched on disk.
+        let store = try makeGraph([:], journals: [
+            "2026-06-10": "- native day\n",
+            "2026_06_10": "- logseq day\n",
+        ])
+        let journals = try store.cache.journalPages()
+        expectEqual(journals.count, 1)
+        expectEqual(journals.first?.nameKey, "2026-06-10")
+        expectEqual(store.page(named: "2026-06-10").blocks.first?.content, "native day")
+        expectTrue(FileManager.default.fileExists(
+            atPath: store.journalsDir.appendingPathComponent("2026_06_10.md").path))
+    }
+
     @Test func dateKeysCanonicalize() {
         expectEqual(PageName.key("2026_06_10"), "2026-06-10")
         expectEqual(PageName.key("2026-06-10"), "2026-06-10")
