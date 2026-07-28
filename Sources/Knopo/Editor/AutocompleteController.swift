@@ -79,6 +79,14 @@ final class AutocompleteController: NSObject {
             return
         }
         let selection = textView.selectedRange()
+        // No autocomplete inside a fenced code block: `[[`, `((`, `#`, and `/`
+        // are ordinary code there (bash `[[ ]]`, arithmetic `(( ))`, comments,
+        // paths), and the renderer doesn't treat them as refs/tags/commands in
+        // code anyway — so completing one would only insert something inert.
+        if BlockKind.caretInsideFence(textView.string, utf16Caret: selection.location) {
+            dismiss()
+            return
+        }
         guard selection.length == 0,
               let trigger = Self.detectTrigger(
                   in: textView.string as NSString, caret: selection.location

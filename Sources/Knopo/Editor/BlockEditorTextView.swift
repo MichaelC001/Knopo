@@ -224,7 +224,11 @@ final class BlockEditorTextView: NSTextView {
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let sel = selectedRange()
         if sel.length > 0, !hasMarkedText(),
-           let typed = insertString as? String, let close = Self.wrapMarkers[typed] {
+           let typed = insertString as? String, let close = Self.wrapMarkers[typed],
+           // Not inside a fenced code block: there these markers are literal
+           // characters (code is full of `*`, backticks, `$`, `[`), so typing
+           // one replaces the selection instead of wrapping it.
+           !BlockKind.caretInsideFence(string, utf16Caret: sel.location) {
             let inner = (string as NSString).substring(with: sel)
             super.insertText(typed + inner + close, replacementRange: sel)
             // Re-select the inner text (not the markers) for repeat presses.
@@ -295,10 +299,15 @@ final class BlockEditorTextView: NSTextView {
             actions?.editorMoveBlock(by: 1)
             return
         case 11 where flags == .command: // Cmd+B → bold
-            wrapSelection(with: "**")
+            // Emphasis is meaningless in code, so these are inert in a fence.
+            if !BlockKind.caretInsideFence(string, utf16Caret: selectedRange().location) {
+                wrapSelection(with: "**")
+            }
             return
         case 34 where flags == .command: // Cmd+I → italic
-            wrapSelection(with: "*")
+            if !BlockKind.caretInsideFence(string, utf16Caret: selectedRange().location) {
+                wrapSelection(with: "*")
+            }
             return
         default:
             break
@@ -566,10 +575,17 @@ final class BlockEditorTextView: NSTextView {
     /// The base font for the whole raw source: a heading block edits at its
     /// rendered size, so focusing never changes row height (no "vibration").
     private static func baseFont(for source: String) -> NSFont {
-        if case .heading(let level, _) = BlockKind.classify(source) {
+        switch BlockKind.classify(source) {
+        case .heading(let level, _):
             return BlockRenderer.headingFont(level: level)
+        case .fence:
+            // Editing a fenced code block shows it monospaced, matching the
+            // rendered view's code font (same size, so the pinned line height
+            // holds and focus doesn't shift the code).
+            return NSFont.monospacedSystemFont(ofSize: BlockRenderer.baseFontSize - 1, weight: .regular)
+        default:
+            return editorFont
         }
-        return editorFont
     }
 
     /// Full re-highlight of the (single-paragraph) block source. Attribute-only
@@ -594,7 +610,12 @@ final class BlockEditorTextView: NSTextView {
             [.font: base, .foregroundColor: BlockRenderer.bodyColor, .paragraphStyle: paragraph],
             range: full
         )
-        for rule in Self.rules {
+        // Inside a fenced code block the content is code, not markdown, so skip
+        // the inline rules: it stays plain monospace, and a `#`/`>`-prefixed
+        // code line isn't dimmed like a heading or quote.
+        let isFence: Bool
+        if case .fence = BlockKind.classify(source) { isFence = true } else { isFence = false }
+        for rule in Self.rules where !isFence {
             var attrs = rule.attributes
             switch rule.fontStyle {
             case .none:
