@@ -367,28 +367,35 @@ final class AppState: ObservableObject {
     /// Fuzzy page-name match for `[[` autocomplete and Cmd+K, ordered by
     /// recency of access (SPEC §6.1).
     func pageNames(matching query: String) -> [String] {
-        let pages = allPages().map(\.displayName)
+        let listings = allPages()
         let recentKeys = (try? store.cache.recentPageKeys()) ?? []
         let recencyRank: [String: Int] = Dictionary(
             uniqueKeysWithValues: recentKeys.enumerated().map { ($1, $0) }
         )
-        func recency(_ name: String) -> Int { recencyRank[PageName.key(name)] ?? Int.max }
+        func recency(_ key: String) -> Int { recencyRank[key] ?? Int.max }
         if query.isEmpty {
-            return pages.sorted { a, b in
-                let ra = recency(a), rb = recency(b)
-                return ra != rb ? ra < rb : a.localizedCaseInsensitiveCompare(b) == .orderedAscending
-            }
+            return listings.sorted { a, b in
+                let ra = recency(a.nameKey), rb = recency(b.nameKey)
+                return ra != rb ? ra < rb
+                    : a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+            }.map(\.displayName)
         }
         // Rank by match closeness first (exact → prefix → substring → loose
-        // subsequence), then recency, then alphabetically — so the page you
-        // typed doesn't sit below more-distant fuzzy matches.
-        return pages.compactMap { name in matchTier(query: query, in: name).map { (name, $0) } }
+        // subsequence). Within a tier, created regular pages rank above journal
+        // days and stubs (uncreated pages a link merely points at), so typing
+        // "[[Mar" surfaces Marina/Marine/Mars ahead of a wall of date pages
+        // (e.g. `[[Mar 1st, 2026]]` stubs from an unconverted Logseq import).
+        // Then recency, then alphabetically.
+        func demoted(_ l: PageListing) -> Bool { l.isJournal || !l.fileExists }
+        return listings.compactMap { l in matchTier(query: query, in: l.displayName).map { (l, $0) } }
             .sorted { a, b in
                 if a.1 != b.1 { return a.1 < b.1 }
-                let ra = recency(a.0), rb = recency(b.0)
-                return ra != rb ? ra < rb : a.0.localizedCaseInsensitiveCompare(b.0) == .orderedAscending
+                if demoted(a.0) != demoted(b.0) { return !demoted(a.0) }
+                let ra = recency(a.0.nameKey), rb = recency(b.0.nameKey)
+                if ra != rb { return ra < rb }
+                return a.0.displayName.localizedCaseInsensitiveCompare(b.0.displayName) == .orderedAscending
             }
-            .map(\.0)
+            .map(\.0.displayName)
     }
 }
 
