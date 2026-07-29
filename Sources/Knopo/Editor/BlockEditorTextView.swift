@@ -271,10 +271,14 @@ final class BlockEditorTextView: NSTextView {
                 // Inside a fenced code block: a fence is one block (§5.5.1),
                 // so Enter inserts a newline rather than splitting.
                 insertText("\n", replacementRange: selectedRange())
+            } else if BlockKind.caretInsideTable(string, utf16Caret: selectedRange().location) {
+                // A table is one block too (§5.2): Enter starts the next row.
+                insertText("\n", replacementRange: selectedRange())
             } else {
                 // Enter: drop the just-completed trailing space (if any), then
                 // split the block at the cursor.
                 removePendingTrailingSpace(at: pendingSpaceCaret)
+                dropBlankTableRow()
                 actions?.editorSplit(atUTF16Offset: selectedRange().location)
             }
             return
@@ -313,6 +317,19 @@ final class BlockEditorTextView: NSTextView {
             break
         }
         super.keyDown(with: event)
+    }
+
+    /// Second Enter at the end of a table: the first one opened a blank row, and
+    /// this one leaves the table — so drop that empty row instead of committing
+    /// it as a blank row in the grid. Only ever removes a trailing newline the
+    /// caret sits right after.
+    private func dropBlankTableRow() {
+        let caret = selectedRange()
+        guard caret.length == 0, caret.location == (string as NSString).length,
+              caret.location > 0, string.hasSuffix("\n"),
+              BlockKind.classify(String(string.dropLast())).isTable
+        else { return }
+        insertText("", replacementRange: NSRange(location: caret.location - 1, length: 1))
     }
 
     /// Wraps the selection in a Markdown emphasis marker (`**` bold, `*` italic),
@@ -457,14 +474,20 @@ final class BlockEditorTextView: NSTextView {
             if case .quote = BlockKind.classify(string) { return true }
             return false
         }()
-        if let text = pasteboard.string(forType: .string),
-           text.contains("\n"),
-           !isQuote,
+        let text = pasteboard.string(forType: .string)
+        // A table is one block as well — both when pasting into one and when the
+        // pasted text is itself a table (the common case: a table copied from a
+        // page into an empty block). Splitting it by lines would shred the grid
+        // into a block per row.
+        let isTable = BlockKind.classify(string).isTable
+            || (text.map { BlockKind.classify($0).isTable } ?? false)
+        if let text, text.contains("\n"),
+           !isQuote, !isTable,
            !BlockKind.caretInsideFence(string, utf16Caret: selectedRange().location) {
             actions?.editorPasteBlocks(text)
             return true
         }
-        if pasteboard.string(forType: .string) == nil {
+        if text == nil {
             let png: Data?
             if let data = pasteboard.data(forType: .png) {
                 png = data
@@ -588,6 +611,34 @@ final class BlockEditorTextView: NSTextView {
         }
     }
 
+    /// Dims a table's cell separators and its whole delimiter row (the second
+    /// line, which has no rendered counterpart). An escaped `\|` is cell content,
+    /// not a separator, so it stays as typed.
+    private func dimTableSyntax(_ storage: NSTextStorage, source: String) {
+        let dim = [NSAttributedString.Key.foregroundColor: NSColor.tertiaryLabelColor]
+        let ns = source as NSString
+        var offset = 0
+        for (index, line) in source.components(separatedBy: "\n").enumerated() {
+            let length = (line as NSString).length
+            if index == 1 {
+                storage.addAttributes(dim, range: NSRange(location: offset, length: length))
+            } else {
+                var search = NSRange(location: offset, length: length)
+                while search.length > 0 {
+                    let pipe = ns.range(of: "|", range: search)
+                    guard pipe.location != NSNotFound else { break }
+                    if pipe.location == offset
+                        || ns.substring(with: NSRange(location: pipe.location - 1, length: 1)) != "\\" {
+                        storage.addAttributes(dim, range: pipe)
+                    }
+                    let next = NSMaxRange(pipe)
+                    search = NSRange(location: next, length: max(0, NSMaxRange(search) - next))
+                }
+            }
+            offset += length + 1 // + the "\n"
+        }
+    }
+
     /// Full re-highlight of the (single-paragraph) block source. Attribute-only
     /// edits, so this never re-enters `didChangeText`.
     private func applyHighlighting() {
@@ -630,6 +681,12 @@ final class BlockEditorTextView: NSTextView {
                 guard let match else { return }
                 storage.addAttributes(attrs, range: match.range)
             }
+        }
+        // A table's pipes and delimiter row are structure, not content: dim them
+        // so the focused source reads as the grid it renders to (§5.2). Cell text
+        // keeps the inline highlighting above.
+        if case .table = BlockKind.classify(source) {
+            dimTableSyntax(storage, source: source)
         }
         // Match the rendered view's emoji size so they don't grow on focus.
         BlockRenderer.shrinkEmoji(storage, scale: BlockRenderer.emojiScale)

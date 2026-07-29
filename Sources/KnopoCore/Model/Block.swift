@@ -97,6 +97,12 @@ public struct Block: Identifiable, Sendable {
     /// stay out of the editor and the rendered body.
     public static let hiddenPropertyKeys: Set<String> = ["background-color"]
 
+    /// Layout properties that are typed and edited as text, but are *not* part of
+    /// the rendered body — they describe how the block is laid out, so showing
+    /// them next to the result would be noise. Unlike `hiddenPropertyKeys` these
+    /// do appear in the focused editor, which is where they're set by hand.
+    public static let editOnlyPropertyKeys: Set<String> = ["table-width"]
+
     /// The block's raw body as shown in the focused editor: content lines
     /// followed by user `key:: value` property lines. The machine-managed
     /// `id::` / `collapsed::` and the hidden display properties above are

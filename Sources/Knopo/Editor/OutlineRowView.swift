@@ -494,10 +494,61 @@ final class RenderedTextView: NSTextView {
     // MARK: Inline pills (code and tags)
 
     override func draw(_ dirtyRect: NSRect) {
-        // Behind the glyphs: inline-code and tag backgrounds.
+        // Behind the glyphs: the table grid, then inline-code and tag
+        // backgrounds (a pill inside a cell paints over the header band).
+        drawTableGrid()
         drawPills(key: BlockRenderer.tagKey, fill: BlockRenderer.tagBackground)
         drawPills(key: BlockRenderer.inlineCodeKey, fill: .secondarySystemFill)
         super.draw(dirtyRect)
+    }
+
+    /// The grid and header band of a rendered table (SPEC §5.2). TextKit 2 has
+    /// no `NSTextTable`, so `BlockRenderer` lays the cells out on tab stops and
+    /// hands us the column geometry; the rules are ours to draw. A table starts
+    /// the block and each of its rows is its own paragraph, so the first
+    /// `rowCount` layout fragments are the rows — anything after them (the
+    /// block's visible `key:: value` property lines) gets no rules.
+    private func drawTableGrid() {
+        guard let storage = textStorage, storage.length > 0,
+              let geometry = storage.attribute(BlockRenderer.tableKey, at: 0, effectiveRange: nil)
+                as? BlockRenderer.TableGeometry,
+              geometry.columnEdges.count >= 2, geometry.rowCount > 0,
+              let tlm = textLayoutManager else { return }
+        let edges = geometry.columnEdges
+        tlm.ensureLayout(for: tlm.documentRange)
+        var rows: [CGRect] = []
+        tlm.enumerateTextLayoutFragments(from: nil, options: []) { fragment in
+            rows.append(fragment.layoutFragmentFrame)
+            return rows.count < geometry.rowCount
+        }
+        guard let first = rows.first, let last = rows.last else { return }
+        let origin = textContainerOrigin
+        // A row's breathing room is paragraph spacing, and TextKit drops the
+        // leading spacing of the first paragraph and the trailing spacing of the
+        // last — so the outer rules are pushed out by that much themselves,
+        // keeping the gap around the text even on all four sides. The room comes
+        // from the container's own vertical inset, so nothing is clipped.
+        let outerPad = BlockRenderer.tableRowPad
+        let top = first.minY + origin.y - outerPad
+        let bottom = last.maxY + origin.y + outerPad
+        let left = edges[0] + origin.x
+        let right = edges[edges.count - 1] + origin.x
+
+        BlockRenderer.tableHeaderFill.setFill()
+        NSRect(x: left, y: top, width: right - left,
+               height: first.maxY + origin.y - top).fill()
+
+        NSColor.separatorColor.setFill()
+        // A rule above the first row, below each row, and the bottom border.
+        var horizontals = [top]
+        horizontals += rows.dropLast().map { $0.maxY + origin.y }
+        horizontals.append(bottom)
+        for y in horizontals {
+            NSRect(x: left, y: y, width: right - left, height: 1).fill()
+        }
+        for x in edges {
+            NSRect(x: x + origin.x, y: top, width: 1, height: bottom - top).fill()
+        }
     }
 
     /// A padded, rounded box behind each run marked with `key` (inline code or a

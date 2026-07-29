@@ -508,7 +508,7 @@ final class OutlineEditorController: NSObject {
         let doc = app.document(for: pageName)
         rows = OutlineOps.visibleRows(in: doc.blocks, zoomRoot: zoom).map {
             Row(block: $0.block, depth: $0.depth, path: $0.path,
-                hasChildren: $0.hasChildren, rendered: cachedRender($0.block))
+                hasChildren: $0.hasChildren, rendered: cachedRender($0.block, depth: $0.depth))
         }
         pruneRenderCacheIfNeeded()
     }
@@ -539,7 +539,7 @@ final class OutlineEditorController: NSObject {
     /// commit anywhere (`dataVersion`) re-renders them. When in doubt a
     /// signature must over-invalidate — a wasted render is invisible, a stale
     /// one is on screen.
-    private func renderSignature(for block: Block) -> Int? {
+    private func renderSignature(for block: Block, contentWidth: CGFloat) -> Int? {
         if block.content.contains("{{query") || block.content.contains("{{embed") {
             return nil
         }
@@ -550,21 +550,32 @@ final class OutlineEditorController: NSObject {
         hasher.combine(BlockRenderer.zoom)
         hasher.combine(BlockRenderer.density)
         hasher.combine(BlockRenderer.contentWeight)
+        // A table lays its columns out against the row width (§5.2), so its
+        // render — alone among blocks — goes stale when the width changes.
+        if BlockKind.classify(block.content).isTable { hasher.combine(contentWidth) }
         if block.content.contains("((") { hasher.combine(app.dataVersion) }
         return hasher.finalize()
     }
 
-    private func cachedRender(_ block: Block) -> NSAttributedString {
-        guard let signature = renderSignature(for: block) else {
+    private func cachedRender(_ block: Block, depth: Int) -> NSAttributedString {
+        let width = contentWidth(forDepth: depth)
+        guard let signature = renderSignature(for: block, contentWidth: width) else {
             renderCache[block.id] = nil
-            return renderBlock(block)
+            return renderBlock(block, contentWidth: width)
         }
         if let entry = renderCache[block.id], entry.signature == signature {
             return entry.rendered
         }
-        let rendered = renderBlock(block)
+        let rendered = renderBlock(block, contentWidth: width)
         renderCache[block.id] = RenderCacheEntry(signature: signature, rendered: rendered)
         return rendered
+    }
+
+    /// Width available to a row's content at this depth — the same number
+    /// `layout()` gives the row, so renders and measurements agree.
+    private func contentWidth(forDepth depth: Int) -> CGFloat {
+        OutlineRowCell.contentWidth(
+            forDepth: depth, rowWidth: max(tableView.bounds.width, 100))
     }
 
     /// Block ids drift across re-parses (only `id::`-persisted blocks keep
@@ -576,13 +587,19 @@ final class OutlineEditorController: NSObject {
         renderCache = renderCache.filter { live.contains($0.key) }
     }
 
-    private func render(_ content: String, todoBlockID: UUID? = nil) -> NSAttributedString {
+    private func render(
+        _ content: String, todoBlockID: UUID? = nil,
+        contentWidth: CGFloat? = nil,
+        tableWidth: BlockRenderer.TableWidth = .max
+    ) -> NSAttributedString {
         BlockRenderer.render(content: content, context: BlockRenderer.Context(
             resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
             assetsDir: app.store.assetsDir,
             inlineQuoteBar: false, // the row cell draws one continuous bar
             resolveEmbed: { [weak self] target in self?.renderEmbed(target) },
             resolveQuery: { [weak self] expr in self?.renderQuery(expr) },
+            contentWidth: contentWidth,
+            tableWidth: tableWidth,
             todoBlockID: todoBlockID
         ))
     }
@@ -643,7 +660,8 @@ final class OutlineEditorController: NSObject {
             inlineQuoteBar: true,
             resolveEmbed: { [weak self] t in
                 self?.renderEmbed(t, embedDepth: embedDepth + 1, visited: nextVisited)
-            }
+            },
+            tables: false // a transcluded table shows as its raw source (§5.2)
         )
         let body = NSMutableAttributedString()
         var count = 0
@@ -788,7 +806,8 @@ final class OutlineEditorController: NSObject {
         let inner = BlockRenderer.Context(
             resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
             assetsDir: app.store.assetsDir,
-            inlineQuoteBar: true)
+            inlineQuoteBar: true,
+            tables: false) // a table in a result row shows as its raw source (§5.2)
         var lastPage: String?
         for hit in result.hits {
             if hit.pageDisplayName != lastPage {
@@ -848,13 +867,21 @@ final class OutlineEditorController: NSObject {
 
     /// Renders a block's content plus a dimmed `key:: value` area for its user
     /// properties, so properties are visible (and editable on focus) — §3.2.
-    private func renderBlock(_ block: Block) -> NSAttributedString {
+    private func renderBlock(_ block: Block, contentWidth: CGFloat) -> NSAttributedString {
         // Tracked so a `{{query}}` can exclude its own host block from results.
         renderingBlockID = block.id
         defer { renderingBlockID = nil }
-        let out = render(block.content, todoBlockID: block.id)
+        let tableWidth = block.properties
+            .first { $0.key == BlockRenderer.TableWidth.propertyKey }
+            .map { BlockRenderer.TableWidth(propertyValue: $0.value) } ?? .max
+        let out = render(block.content, todoBlockID: block.id,
+                         contentWidth: contentWidth, tableWidth: tableWidth)
             .mutableCopy() as! NSMutableAttributedString
-        guard !block.properties.isEmpty else { return out }
+        let shown = block.properties.filter {
+            !Block.hiddenPropertyKeys.contains($0.key)
+                && !Block.editOnlyPropertyKeys.contains($0.key)
+        }
+        guard !shown.isEmpty else { return out }
         let keyAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: BlockRenderer.baseFontSize, weight: .medium),
             .foregroundColor: NSColor.tertiaryLabelColor,
@@ -863,16 +890,21 @@ final class OutlineEditorController: NSObject {
             .font: NSFont.systemFont(ofSize: BlockRenderer.baseFontSize),
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
-        for prop in block.properties where !Block.hiddenPropertyKeys.contains(prop.key) {
+        let bodyLength = out.length
+        for prop in shown {
             if out.length > 0 {
                 out.append(NSAttributedString(string: "\n", attributes: valueAttrs))
             }
             out.append(NSAttributedString(string: "\(prop.key): ", attributes: keyAttrs))
             out.append(NSAttributedString(string: prop.value, attributes: valueAttrs))
         }
-        // Re-pin the line height so the appended property lines match (and so
-        // focused/unfocused heights stay equal — same lines, same metrics).
-        BlockRenderer.pinLineHeight(out, BlockRenderer.lineHeight(forSource: block.content))
+        // Pin the appended property lines to the block's line height (so
+        // focused/unfocused heights stay equal — same lines, same metrics). Only
+        // those lines: the body was pinned by the renderer, which gives a table's
+        // rows their own taller metrics.
+        BlockRenderer.pinLineHeight(
+            out, BlockRenderer.lineHeight(forSource: block.content),
+            range: NSRange(location: bodyLength, length: out.length - bodyLength))
         return out
     }
 
@@ -981,10 +1013,24 @@ final class OutlineEditorController: NSObject {
         tableView.invalidateIntrinsicContentSize()
     }
 
+    /// Re-renders the rows whose rendered form depends on the row width — tables,
+    /// whose columns are laid out to fit it (§5.2). Their cache entries went stale
+    /// with the width, so `cachedRender` re-runs them and leaves everything else
+    /// untouched.
+    private func rerenderWidthDependentRows() {
+        for index in rows.indices where BlockKind.classify(rows[index].block.content).isTable {
+            let rendered = cachedRender(rows[index].block, depth: rows[index].depth)
+            guard rendered !== rows[index].rendered else { continue }
+            rows[index].rendered = rendered
+            reloadRow(index)
+        }
+    }
+
     private func widthDidChange() {
         // Deferred: noteHeightOfRows inside layout would recurse.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.rerenderWidthDependentRows()
             let count = min(self.rows.count, self.tableView.numberOfRows)
             if count > 0 {
                 self.noteHeightChanged(Array(0..<count))
@@ -1014,7 +1060,8 @@ final class OutlineEditorController: NSObject {
         attachEditor(to: id, selection: selection, startSession: true)
         if let previous, previous != id,
            let prevIndex = rows.firstIndex(where: { $0.block.id == previous }) {
-            rows[prevIndex].rendered = cachedRender(rows[prevIndex].block)
+            rows[prevIndex].rendered = cachedRender(rows[prevIndex].block,
+                                                    depth: rows[prevIndex].depth)
             reloadRow(prevIndex)
         }
     }
@@ -1054,7 +1101,7 @@ final class OutlineEditorController: NSObject {
             tableView.window?.makeFirstResponder(tableView)
         }
         if let index = rows.firstIndex(where: { $0.block.id == id }) {
-            rows[index].rendered = cachedRender(rows[index].block)
+            rows[index].rendered = cachedRender(rows[index].block, depth: rows[index].depth)
             reloadRow(index)
         }
     }
@@ -1572,7 +1619,8 @@ final class OutlineEditorController: NSObject {
         BlockRenderer.render(content: content, context: BlockRenderer.Context(
             resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
             assetsDir: app.store.assetsDir,
-            inlineQuoteBar: false))
+            inlineQuoteBar: false,
+            tables: false)) // no room for a grid in a popover (§5.2)
     }
 
     private func createFirstBlock() {
@@ -1959,7 +2007,7 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
         // Measuring is a full TextKit layout pass and `reloadData` asks for
         // every row — reuse the height while the block's render signature and
         // content width are unchanged.
-        if let signature = renderSignature(for: model.block),
+        if let signature = renderSignature(for: model.block, contentWidth: contentWidth),
            var entry = renderCache[model.block.id], entry.signature == signature {
             if let height = entry.height, entry.measuredWidth == contentWidth {
                 return height

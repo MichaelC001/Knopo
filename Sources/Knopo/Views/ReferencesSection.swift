@@ -155,7 +155,10 @@ struct ReferencesSection: View {
     private func renderContext() -> BlockRenderer.Context {
         BlockRenderer.Context(
             resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
-            assetsDir: app.store.assetsDir
+            assetsDir: app.store.assetsDir,
+            // A reference row is a snippet in a SwiftUI `Text`: nothing there
+            // draws a grid, so a table block shows its raw source (§5.2).
+            tables: false
         )
     }
 }
@@ -199,7 +202,8 @@ struct BacklinkRow: View {
                             resolveBlockRef: { [weak app] id in
                                 app?.store.resolveBlock(id)?.block.content
                             },
-                            assetsDir: app.store.assetsDir
+                            assetsDir: app.store.assetsDir,
+                            tables: false // raw source in a snippet row (§5.2)
                         )
                     )))
                     .environment(\.openURL, OpenURLAction { url in

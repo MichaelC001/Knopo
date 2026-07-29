@@ -171,10 +171,24 @@ A block whose content starts with a recognized prefix renders accordingly:
 | `> ` | block quote |
 | `#+BEGIN_QUOTE` … `#+END_QUOTE` | block quote (org-mode container form; render-only, recognized for compatibility — the markers round-trip untouched) |
 | ```` ``` ```` fenced code | code block (the whole fence is one block). Inside a focused fence, `Enter` inserts a newline and `Tab` inserts an indent, instead of acting on the outline. No per-language syntax highlighting in v1 — the language tag is stored and shown, code renders monospace |
+| `\|` first line + delimiter row | GFM pipe table (the whole table is one block) — see below |
 | `---` alone | horizontal rule |
 | `TODO ` / `DONE ` | checkbox-style rendering with click-to-toggle; stored as the literal keyword (no task engine behind it). `Cmd+Enter` in the focused block cycles plain → `TODO` → `DONE` |
 
-Tables (GitHub style) render read-only inside a block; editing happens in raw source.
+**Tables** (GitHub-style pipe tables) are one block, like a fence. A first line starting with `|` followed by a delimiter row (`| --- | :---: | ---: |`) of the same cell count makes the block a table — without that delimiter, pipe-shaped lines stay plain text, so a `|` in prose is safe. Cells hold ordinary inline Markdown (page refs, tags, emphasis, code all render, and refs in cells are indexed like any others); `\|` is a literal pipe and a `|` inside a code span doesn't split a cell. The delimiter row sets each column's alignment (left / center / right), and rows are padded or truncated to the header's width so the grid stays rectangular.
+
+A focused table shows its raw source — there is no cell-level editing UX in v1 (no Tab-between-cells, no `/table`). Inside a table `Enter` adds a row; pressing it again on the blank row that opens leaves the table and splits the block, dropping that blank row. Pasting multi-line text into a table — or pasting table-shaped text anywhere — keeps it in the one block instead of splitting it into blocks by line.
+
+**Table width** is set per table by a `table-width::` block property. It is an *edit-only* property: typed and edited as text in the focused block's source, but not part of the rendered body — it describes the layout, so showing it next to the result would be noise. (Contrast `background-color::` in §5.6, which is hidden from the editor too and set from the bullet menu.)
+
+| Value | Layout |
+|---|---|
+| `max` (default) | as wide as the row allows: columns share the full content width in proportion to their natural widths |
+| `min` | only as wide as its content needs |
+
+**A table never exceeds the row either way** — it is fitted, not clipped. When the natural columns don't fit, the widest ones are capped until the table fits and narrow columns keep their width, so a `Qty` column stays legible instead of being squeezed to buy points for a paragraph-wide neighbour. A table with more columns than the row can seat trims its cell padding rather than overflow. Widths are recomputed as the window resizes.
+
+v1 limitation: a cell never wraps — an over-long one tail-truncates with an ellipsis at whatever width its column gets. Where there is no room to lay a grid out — reference and query-result rows, hover previews, `{{embed}}` transclusions — a table block shows its raw pipe source instead. Conversely, an `{{embed}}` or `{{query}}` *inside a cell* renders as the muted chip it does elsewhere, never as an expanded region: a cell is one line, and a multi-row result set has nowhere to go in it.
 
 ### 5.3 Explicitly unsupported
 
@@ -432,7 +446,7 @@ The reference index updates incrementally on every block commit (debounced ~300 
 ## 13. Editing semantics worth pinning down
 
 - **Undo/redo** is per-session, global, and crosses block boundaries (a page rename or a multi-block paste is one undo step).
-- **Copy** of a selected block subtree puts Markdown (with indentation) on the clipboard; **paste** of multi-line Markdown splits into blocks by list structure, or by lines if no list markers present. Exception: pasting into a quote or fenced-code block keeps the lines inside that block (both are single multi-line blocks by design).
+- **Copy** of a selected block subtree puts Markdown (with indentation) on the clipboard; **paste** of multi-line Markdown splits into blocks by list structure, or by lines if no list markers present. Exception: pasting into a quote, fenced-code, or table block — or pasting table-shaped text — keeps the lines inside that block (each is a single multi-line block by design).
 - **Image paste** imports the file or bitmap into `assets/` and inserts its Markdown at the caret. Undo removes the Markdown edit, but imported asset files remain.
 - **Delete page** moves its file to the OS trash. Incoming `[[refs]]` now point to a stub; incoming `((refs))` become broken (§7.3) after the confirmation prompt (§7.4) — the prompt aggregates counts for the whole page.
 - **Selection**: `Esc` from text editing selects the block (node selection); arrows extend selection across siblings; `Tab`/indent, move, delete then operate on the whole selection.

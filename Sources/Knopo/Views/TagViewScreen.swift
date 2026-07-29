@@ -90,7 +90,8 @@ struct TagViewScreen: View {
                         resolveBlockRef: { [weak app] id in
                             app?.store.resolveBlock(id)?.block.content
                         },
-                        assetsDir: app.store.assetsDir
+                        assetsDir: app.store.assetsDir,
+                        tables: false // raw source in a snippet row (§5.2)
                     )
                 )))
                 .environment(\.openURL, OpenURLAction { url in

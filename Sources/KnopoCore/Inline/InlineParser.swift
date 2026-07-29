@@ -43,16 +43,32 @@ public enum EmbedTarget: Equatable, Hashable, Sendable {
     case page(String)
 }
 
+/// Column alignment of a GFM table, from its delimiter row: `:---` left,
+/// `:---:` center, `---:` right (a bare `---` is left).
+public enum TableAlignment: String, Equatable, Sendable {
+    case left, center, right
+}
+
 /// Block-level classification of a block's content (SPEC §5.2).
 public enum BlockKind: Equatable, Sendable {
     case paragraph(text: String, todo: TodoState?)
     case heading(level: Int, text: String)
     case quote(text: String)
     case fence(language: String, code: String)
+    /// A GFM pipe table — like a fence, one block holding every table line.
+    /// Cells carry raw inline Markdown (refs, tags, emphasis render normally).
+    case table(header: [String], alignments: [TableAlignment], rows: [[String]])
     case horizontalRule
+
+    /// Whether this is a table, without spelling out its payload.
+    public var isTable: Bool {
+        if case .table = self { return true }
+        return false
+    }
 
     public static func classify(_ content: String) -> BlockKind {
         if content == "---" { return .horizontalRule }
+        if let table = tableKind(content) { return table }
         if content.hasPrefix("```") || content.hasPrefix("~~~") {
             var lines = content.components(separatedBy: "\n")
             let language = String(lines.removeFirst().dropFirst(3))
@@ -112,6 +128,111 @@ public enum BlockKind: Equatable, Sendable {
         }
         // No closing fence yet: the whole block is an open fence.
         return true
+    }
+
+    // MARK: - Tables (GFM pipe tables, SPEC §5.2)
+
+    /// Classifies `content` as a table, or nil if it isn't one. The GFM
+    /// signature is a first line starting with `|` followed by a delimiter row
+    /// (`| --- | :---: |`) of the same cell count — a pipe in prose, or a run of
+    /// pipe lines with no delimiter, stays a paragraph.
+    static func tableKind(_ content: String) -> BlockKind? {
+        guard content.hasPrefix("|") else { return nil }
+        let lines = content.components(separatedBy: "\n")
+        guard lines.count >= 2 else { return nil }
+        let header = tableCells(lines[0])
+        guard !header.isEmpty,
+              let alignments = tableAlignments(lines[1]),
+              alignments.count == header.count
+        else { return nil }
+        // Every remaining line is a row, padded/truncated to the header's width
+        // (GFM discards extra cells and treats missing ones as empty).
+        let rows = lines.dropFirst(2).map { line in
+            var cells = tableCells(line)
+            if cells.count > header.count { cells.removeLast(cells.count - header.count) }
+            cells += Array(repeating: "", count: max(0, header.count - cells.count))
+            return cells
+        }
+        return .table(header: header, alignments: alignments, rows: rows)
+    }
+
+    /// The delimiter row's per-column alignments, or nil if `line` isn't one.
+    /// Every cell must be dashes with optional leading/trailing colons.
+    private static func tableAlignments(_ line: String) -> [TableAlignment]? {
+        let cells = tableCells(line)
+        guard !cells.isEmpty else { return nil }
+        var alignments: [TableAlignment] = []
+        for cell in cells {
+            let left = cell.hasPrefix(":")
+            let right = cell.hasSuffix(":")
+            let dashes = cell.dropFirst(left ? 1 : 0).dropLast(right && cell.count > 1 ? 1 : 0)
+            guard !dashes.isEmpty, dashes.allSatisfy({ $0 == "-" }) else { return nil }
+            switch (left, right) {
+            case (true, true): alignments.append(.center)
+            case (false, true): alignments.append(.right)
+            default: alignments.append(.left)
+            }
+        }
+        return alignments
+    }
+
+    /// Splits one table line into trimmed cells. The outer pipes are structure,
+    /// not content; a `\|` is a literal pipe in the cell, and a `|` inside a
+    /// `` `code span` `` doesn't split (both per GFM).
+    static func tableCells(_ line: String) -> [String] {
+        var cells: [String] = []
+        var cell = ""
+        var escaped = false
+        var inCode = false
+        for character in line {
+            if escaped {
+                // Only `\|` is ours to unescape; every other escape belongs to
+                // the inline parser and must reach it intact.
+                cell += character == "|" ? "|" : "\\\(character)"
+                escaped = false
+            } else if character == "\\" {
+                // Splitting and unescaping run before inline parsing, so `\|`
+                // is a literal pipe even inside a code span (GFM §4.10).
+                escaped = true
+            } else if character == "`" {
+                inCode.toggle()
+                cell.append(character)
+            } else if character == "|", !inCode {
+                cells.append(cell)
+                cell = ""
+            } else {
+                cell.append(character)
+            }
+        }
+        if escaped { cell += "\\" }
+        cells.append(cell)
+        // A leading pipe opens the row (empty first cell) and a trailing one
+        // closes it — drop both, but never the cells of a `|` -only line.
+        if let first = cells.first, first.trimmingCharacters(in: .whitespaces).isEmpty {
+            cells.removeFirst()
+        }
+        if cells.count > 1, let last = cells.last,
+           last.trimmingCharacters(in: .whitespaces).isEmpty {
+            cells.removeLast()
+        }
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// Whether a newline inserted at `utf16Caret` falls inside a table — i.e.
+    /// the block is a table and the caret sits on one of its lines. The editor
+    /// uses this to keep `Enter` from splitting a table: inside, `Enter` adds a
+    /// row; on a trailing blank line (Enter pressed twice) it splits as usual.
+    public static func caretInsideTable(_ content: String, utf16Caret: Int) -> Bool {
+        guard case .table = classify(content) else { return false }
+        var offset = 0 // UTF-16 offset at the start of the current line
+        for line in content.components(separatedBy: "\n") {
+            let lineEnd = offset + (line as NSString).length
+            if utf16Caret <= lineEnd {
+                return !line.trimmingCharacters(in: .whitespaces).isEmpty
+            }
+            offset = lineEnd + 1 // + the "\n"
+        }
+        return false
     }
 }
 

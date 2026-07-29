@@ -32,6 +32,20 @@ enum BlockRenderer {
         /// Renders a `{{query …}}` expression's results (read-only); nil = no
         /// resolver in this context (rendered as a muted chip). §17.
         var resolveQuery: (QueryExpr) -> NSAttributedString?
+        /// Whether a table block renders as a laid-out table. False in the
+        /// constrained contexts that show block content as a snippet — reference
+        /// lists, previews, embed/query results, SwiftUI `Text` — where a grid
+        /// has no room and nothing draws it; there the raw pipe source shows
+        /// instead (SPEC §5.2).
+        var tables = true
+        /// Width available to this block's content, when the caller knows it (the
+        /// outline row does; a SwiftUI `Text` doesn't). A table lays its columns
+        /// out against this, so it always fits. Nil → columns take their natural
+        /// widths, as if the row were unbounded.
+        var contentWidth: CGFloat?
+        /// The block's `table-width::` choice (SPEC §5.2). Only meaningful with
+        /// `contentWidth` set — there's nothing to fill without a width.
+        var tableWidth: TableWidth = .max
         /// The block being rendered, when known — its TODO checkbox then carries
         /// a `knopo://toggle-todo?block=<id>` link so a click can toggle the
         /// right block even in a query result or embed (where the surrounding
@@ -45,6 +59,9 @@ enum BlockRenderer {
              pageRefBrackets: Bool = BlockRenderer.bracketsEnabled,
              resolveEmbed: @escaping (EmbedTarget) -> NSAttributedString? = { _ in nil },
              resolveQuery: @escaping (QueryExpr) -> NSAttributedString? = { _ in nil },
+             tables: Bool = true,
+             contentWidth: CGFloat? = nil,
+             tableWidth: TableWidth = .max,
              todoBlockID: UUID? = nil) {
             self.resolveBlockRef = resolveBlockRef
             self.assetsDir = assetsDir
@@ -53,6 +70,9 @@ enum BlockRenderer {
             self.pageRefBrackets = pageRefBrackets
             self.resolveEmbed = resolveEmbed
             self.resolveQuery = resolveQuery
+            self.tables = tables
+            self.contentWidth = contentWidth
+            self.tableWidth = tableWidth
             self.todoBlockID = todoBlockID
         }
     }
@@ -74,6 +94,12 @@ enum BlockRenderer {
     static let tagBackground = dynamicColor(
         light: NSColor(srgbRed: 0.42, green: 0.36, blue: 0.64, alpha: 0.10),
         dark: NSColor(srgbRed: 0.72, green: 0.66, blue: 0.88, alpha: 0.16))
+
+    /// The band behind a table's header row — barely-there, like the grid rules,
+    /// so the table reads as structure and not as a filled box.
+    static let tableHeaderFill = dynamicColor(
+        light: NSColor(white: 0, alpha: 0.045),
+        dark: NSColor(white: 1, alpha: 0.07))
 
     /// User preference: show faint `[[ ]]` brackets around page references.
     /// Per-app (a viewing/aesthetic choice), not per-graph data.
@@ -122,6 +148,72 @@ enum BlockRenderer {
     /// Ordinal of an image token within one top-level block render. Attached to
     /// the object-replacement character so the row view can rewrite its source.
     static let imageIndexKey = NSAttributedString.Key("knopoImageIndex")
+    /// Marks a rendered table's whole run and carries its column geometry, so
+    /// `RenderedTextView` can draw the grid and header band (TextKit 2 has no
+    /// `NSTextTable`, so the columns are tab stops and the rules are drawn).
+    static let tableKey = NSAttributedString.Key("knopoTable")
+
+    /// Where a rendered table's vertical grid lines sit, as x offsets from the
+    /// text container's leading edge — `columns + 1` of them, outer borders
+    /// included — and how many lines of the block are table rows. The row count
+    /// bounds the drawing: a block can render more lines than its table (its
+    /// visible `key:: value` property lines follow it), and those must not get
+    /// grid rules. A class so it rides along as an attribute value.
+    final class TableGeometry: NSObject {
+        let columnEdges: [CGFloat]
+        let rowCount: Int
+        init(columnEdges: [CGFloat], rowCount: Int) {
+            self.columnEdges = columnEdges
+            self.rowCount = rowCount
+        }
+    }
+
+    /// Horizontal breathing room between a cell's text and its column rules.
+    static var tableCellPad: CGFloat { (10 * zoom).rounded() }
+    /// Vertical breathing room above and below a row's text. Added as paragraph
+    /// spacing rather than line height, so the row grows but a tag or inline-code
+    /// pill inside a cell still hugs its text instead of filling the whole row.
+    static var tableRowPad: CGFloat { (4 * zoom).rounded() }
+    /// Slack added to every column so a hair of measurement drift between
+    /// `size()` (which sizes the columns) and TextKit 2 (which lays the row out)
+    /// can never push a cell past its own tab stop and scramble the row.
+    static let tableColumnSlack: CGFloat = 2
+    /// Widest a column may get from its *content* before its cells tail-truncate.
+    /// Caps how much one long-text column can dominate the proportions; the
+    /// table's real width comes from `TableWidth` and the row width.
+    static var tableMaxColumnWidth: CGFloat { (baseFontSize * 22).rounded() }
+    /// Narrowest a column's *content* may be squeezed to when a table has to
+    /// fit — room for an ellipsis — so no column collapses into its rules.
+    static var tableMinColumnWidth: CGFloat { baseFontSize }
+
+    /// How wide a table lays itself out, from `table-width:: max | min` on the
+    /// block (SPEC §5.2). Either way the table never exceeds the row — columns
+    /// are scaled to fit rather than clipped at the edge.
+    enum TableWidth: String, CaseIterable {
+        /// As wide as the row allows: columns share the full content width in
+        /// proportion to their natural widths. The default.
+        case max
+        /// Only as wide as the content needs — but still scaled down if that
+        /// would overflow the row.
+        case min
+
+        static let propertyKey = "table-width"
+
+        /// Lenient parse of a hand-typed property value; an unrecognized value
+        /// falls back to the default rather than mangling the table.
+        init(propertyValue: String) {
+            self = TableWidth(
+                rawValue: propertyValue.trimmingCharacters(in: .whitespaces).lowercased()
+            ) ?? .max
+        }
+
+        var displayName: String {
+            switch self {
+            case .max: return "Maximum Width"
+            case .min: return "Minimum Width"
+            }
+        }
+    }
 
     /// Inline-code glyph color: a dark grey (not pure body-text black) so it
     /// reads as distinct on the code pill. Adapts to light/dark.
@@ -316,9 +408,11 @@ enum BlockRenderer {
     /// Applies a fixed `lineHeight` across the string, preserving any existing
     /// paragraph style (e.g. quote indent).
     static func pinLineHeight(
-        _ string: NSMutableAttributedString, _ lineHeight: CGFloat, lineSpacing: CGFloat = 0
+        _ string: NSMutableAttributedString, _ lineHeight: CGFloat, lineSpacing: CGFloat = 0,
+        range: NSRange? = nil
     ) {
-        let full = NSRange(location: 0, length: string.length)
+        let full = range ?? NSRange(location: 0, length: string.length)
+        guard full.length > 0 else { return }
         string.enumerateAttribute(.paragraphStyle, in: full) { value, range, _ in
             // Generated regions (embeds, query results) manage their own per-line
             // heights via `pinLineHeightPerParagraph` — a blanket base-height pin
@@ -372,7 +466,11 @@ enum BlockRenderer {
         let body = renderBody(content: content, context: context, imageIndex: &imageIndex)
         guard let mutable = body.mutableCopy() as? NSMutableAttributedString else { return body }
         shrinkEmoji(mutable, scale: emojiScale)
-        pinLineHeight(mutable, lineHeight(forSource: content), lineSpacing: lineSpacing)
+        // A table's "wrapped lines" are its rows: they must abut so the grid
+        // reads as one figure, so it takes no inter-line spacing.
+        let isTable = context.tables && BlockKind.classify(content).isTable
+        pinLineHeight(mutable, lineHeight(forSource: content),
+                      lineSpacing: isTable ? 0 : lineSpacing)
         return mutable
     }
 
@@ -399,7 +497,10 @@ enum BlockRenderer {
     private static func renderBody(
         content: String, context: Context, imageIndex: inout Int
     ) -> NSAttributedString {
-        let kind = BlockKind.classify(content)
+        var kind = BlockKind.classify(content)
+        // Where a table can't be laid out or drawn (§5.2), it reads as its raw
+        // pipe source — the honest snippet, not a half-rendered grid.
+        if kind.isTable, !context.tables { kind = .paragraph(text: content, todo: nil) }
         switch kind {
         case .horizontalRule:
             return NSAttributedString(
@@ -422,6 +523,9 @@ enum BlockRenderer {
                 .foregroundColor: NSColor.textColor,
             ]))
             return out
+        case .table(let header, let alignments, let rows):
+            return renderTable(header: header, alignments: alignments, rows: rows,
+                               context: context, imageIndex: &imageIndex)
         case .heading(let level, let text):
             return inline(text, baseFont: headingFont(level: level), context: context,
                           imageIndex: &imageIndex)
@@ -480,6 +584,210 @@ enum BlockRenderer {
             out.append(body)
             return out
         }
+    }
+
+    // MARK: - Tables (SPEC §5.2)
+
+    /// Lays a GFM pipe table out as tab-stopped rows: cells render through the
+    /// ordinary inline pipeline (refs, tags, emphasis all work), each column is
+    /// as wide as its widest cell up to `tableMaxColumnWidth`, and every cell
+    /// sits at its own left tab stop — computed per row from the cell's measured
+    /// width, so left/center/right alignment is exact instead of relying on
+    /// TextKit's center/right tab semantics. The grid itself is drawn by
+    /// `RenderedTextView` from the `tableKey` geometry.
+    ///
+    /// v1 doesn't wrap inside a cell: a cell past the column cap tail-truncates
+    /// with an ellipsis, and a table wider than the row is clipped, not reflowed.
+    private static func renderTable(
+        header: [String], alignments: [TableAlignment], rows: [[String]],
+        context: Context, imageIndex: inout Int
+    ) -> NSAttributedString {
+        let columns = header.count
+        guard columns > 0 else { return NSAttributedString() }
+        // A cell is one line, so an `{{embed}}` / `{{query}}` in it renders as the
+        // same muted chip every other constrained context shows. Expanding one
+        // here would run the query and render every result row — a whole
+        // multi-line region — only to truncate it to an ellipsis in a single-line
+        // cell, on every render of the block.
+        var cellContext = context
+        cellContext.resolveEmbed = { _ in nil }
+        cellContext.resolveQuery = { _ in nil }
+        // Header first, then rows in source order — image indices must line up
+        // with the source's image tokens for the row view's resize rewrite.
+        var lines: [[NSAttributedString]] = [header.map {
+            inline($0, baseFont: bolder(baseFont()), baseColor: bodyColor,
+                   context: cellContext, imageIndex: &imageIndex)
+        }]
+        for row in rows {
+            lines.append(row.map {
+                inline($0, baseFont: baseFont(), baseColor: bodyColor,
+                       context: cellContext, imageIndex: &imageIndex)
+            })
+        }
+        // Natural column width: the widest cell, capped so one long-text column
+        // can't dominate the proportions.
+        var natural = [CGFloat](repeating: 0, count: columns)
+        for line in lines {
+            for (column, cell) in line.enumerated() where column < columns {
+                natural[column] = max(natural[column],
+                                      min(ceil(cell.size().width), tableMaxColumnWidth))
+            }
+        }
+        let pad = tableCellPad(columns: columns, available: context.contentWidth)
+        let laidOut = fittedColumnWidths(
+            natural: natural, available: context.contentWidth,
+            mode: context.tableWidth, pad: pad)
+        let contentWidths = laidOut.map { max(0, $0 - pad * 2 - tableColumnSlack) }
+        var edges: [CGFloat] = [0]
+        for width in laidOut {
+            edges.append(edges[edges.count - 1] + width)
+        }
+
+        let out = NSMutableAttributedString()
+        let structure: [NSAttributedString.Key: Any] = [.font: baseFont()]
+        for (index, line) in lines.enumerated() {
+            let rowStart = out.length
+            var stops: [NSTextTab] = []
+            for column in 0..<columns {
+                let cell = truncatedCell(line[column], toWidth: contentWidths[column])
+                let cellWidth = min(ceil(cell.size().width), contentWidths[column])
+                let free = contentWidths[column] - cellWidth
+                let x: CGFloat
+                switch alignments[column] {
+                case .left: x = edges[column] + pad
+                case .center: x = edges[column] + pad + (free / 2).rounded()
+                case .right: x = edges[column] + pad + free
+                }
+                stops.append(NSTextTab(textAlignment: .left, location: x))
+                // A tab before *every* cell (including the first) so one stop
+                // per column positions it, whatever its alignment.
+                out.append(NSAttributedString(string: "\t", attributes: structure))
+                out.append(cell)
+            }
+            if index < lines.count - 1 {
+                out.append(NSAttributedString(string: "\n", attributes: structure))
+            }
+            let style = NSMutableParagraphStyle()
+            style.tabStops = stops
+            // A row is one line by construction; clipping keeps an over-wide
+            // table from reflowing into a second line and breaking the grid.
+            style.lineBreakMode = .byClipping
+            // Breathing room inside the cell, split above and below the text so
+            // it sits centred between the row's rules.
+            style.paragraphSpacingBefore = tableRowPad
+            style.paragraphSpacing = tableRowPad
+            // The range covers the row's own newline too, so each paragraph —
+            // terminator included — carries exactly one row's stops.
+            out.addAttribute(.paragraphStyle, value: style,
+                             range: NSRange(location: rowStart, length: out.length - rowStart))
+        }
+        out.addAttribute(tableKey,
+                         value: TableGeometry(columnEdges: edges, rowCount: lines.count),
+                         range: NSRange(location: 0, length: out.length))
+        return out
+    }
+
+    /// The per-cell padding a table with this many columns can afford. Padding
+    /// and slack are a fixed cost per column that scaling can't recover, so a
+    /// table with many columns in a narrow row trims its padding rather than
+    /// overflowing — the one way "never clip" can hold for any column count.
+    static func tableCellPad(columns: Int, available: CGFloat?) -> CGFloat {
+        let standard = tableCellPad
+        guard let available, available > 0, columns > 0 else { return standard }
+        let affordable = (available / CGFloat(columns) - tableColumnSlack
+            - tableMinColumnWidth) / 2
+        return max(1, min(standard, affordable.rounded(.down)))
+    }
+
+    /// Turns natural content widths into the laid-out column widths (content plus
+    /// padding), so a table always fits `available` — no clipping at the row edge.
+    ///
+    /// `.max` fills the width exactly, `.min` only shrinks when the natural
+    /// widths would overflow. Growing scales every column alike, keeping the
+    /// content's proportions. Shrinking instead caps the widest columns and leaves
+    /// the rest alone, so the overflow comes out of the columns that have room to
+    /// give — a `Qty` column keeps its heading rather than being squeezed to `Q…`
+    /// to buy a few points for a paragraph-wide neighbour.
+    static func fittedColumnWidths(
+        natural: [CGFloat], available: CGFloat?, mode: TableWidth, pad: CGFloat
+    ) -> [CGFloat] {
+        let widths = natural.map { $0 + pad * 2 + tableColumnSlack }
+        // No width to fit against: natural widths, as if the row were unbounded.
+        guard let available, available > 0, !widths.isEmpty else { return widths }
+        let total = widths.reduce(0, +)
+        if total > available {
+            let cap = widestColumnFitting(widths, available: available)
+            return widths.map { min($0, cap) }
+        }
+        if mode == .max {
+            let scale = available / total // ≥ 1 on this path
+            return widths.map { $0 * scale }
+        }
+        return widths
+    }
+
+    /// The largest per-column cap whose clamped widths total `available` — the
+    /// point at which the wide columns have absorbed the whole overflow and the
+    /// narrow ones are still untouched. (Every column ends up at the cap only when
+    /// even that isn't enough, i.e. an equal split.)
+    private static func widestColumnFitting(
+        _ widths: [CGFloat], available: CGFloat
+    ) -> CGFloat {
+        var remaining = available
+        let ascending = widths.sorted()
+        for (index, width) in ascending.enumerated() {
+            let unresolved = CGFloat(ascending.count - index)
+            // Can this column — and every wider one — keep its full width?
+            if width * unresolved <= remaining {
+                remaining -= width
+            } else {
+                return remaining / unresolved
+            }
+        }
+        return ascending.last ?? 0
+    }
+
+    /// Tail-truncates a rendered cell that would overrun its column, keeping the
+    /// cell's own styling and marking the cut with an ellipsis. Composed
+    /// character sequences are dropped whole, so an emoji or accented letter
+    /// never breaks apart mid-truncation.
+    ///
+    /// The cut point is binary-searched: measuring is by far the expensive part,
+    /// and walking back one character at a time cost a full re-measure per
+    /// character — seconds of hang on a cell holding a paragraph of text.
+    private static func truncatedCell(
+        _ cell: NSAttributedString, toWidth width: CGFloat
+    ) -> NSAttributedString {
+        guard ceil(cell.size().width) > width, cell.length > 0 else { return cell }
+        let ellipsis = NSAttributedString(
+            string: "…", attributes: cell.attributes(at: cell.length - 1, effectiveRange: nil))
+        let ns = cell.string as NSString
+        // Every composed-character boundary is a candidate cut, shortest first.
+        var cuts = [0]
+        var offset = 0
+        while offset < ns.length {
+            offset = NSMaxRange(ns.rangeOfComposedCharacterSequence(at: offset))
+            cuts.append(offset)
+        }
+        func truncated(at cut: Int) -> NSAttributedString {
+            let out = NSMutableAttributedString(attributedString: cell.attributedSubstring(
+                from: NSRange(location: 0, length: cut)))
+            out.append(ellipsis)
+            return out
+        }
+        // `cuts.last` is the whole cell, which the guard above proved too wide;
+        // if even the bare ellipsis overflows there's nothing narrower to show.
+        guard ceil(truncated(at: 0).size().width) <= width else { return ellipsis }
+        var fitting = 0, tooWide = cuts.count - 1
+        while tooWide - fitting > 1 {
+            let middle = (fitting + tooWide) / 2
+            if ceil(truncated(at: cuts[middle]).size().width) <= width {
+                fitting = middle
+            } else {
+                tooWide = middle
+            }
+        }
+        return truncated(at: cuts[fitting])
     }
 
     // MARK: - Inline rendering
