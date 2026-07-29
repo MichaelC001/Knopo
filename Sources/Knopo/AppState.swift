@@ -38,6 +38,11 @@ final class AppState: ObservableObject {
     private var journalDaySignature = ""
     private var journalCacheToday = ""
 
+    // The calendar day the UI is treating as today (see `checkDayRollover`).
+    private var currentDay = JournalDate.today().pageName
+    private var dayRollover: DispatchWorkItem?
+    private var dayObservers: [NSObjectProtocol] = []
+
     // Global undo (SPEC §13): snapshots of whole-page states; a multi-page
     // operation (rename) is one entry.
     private struct UndoEntry {
@@ -65,6 +70,7 @@ final class AppState: ObservableObject {
         }
         watcher.start()
         self.watcher = watcher
+        startDayRolloverWatch()
     }
 
     /// Called before this graph session is replaced (File → Open Graph…):
@@ -73,6 +79,74 @@ final class AppState: ObservableObject {
         flushPendingSaves()
         watcher?.stop()
         watcher = nil
+        dayRollover?.cancel()
+        dayRollover = nil
+        dayObservers.forEach(NotificationCenter.default.removeObserver)
+        dayObservers = []
+    }
+
+    // MARK: - Day rollover
+
+    /// Keeps journal home on the real calendar day while the app stays open: at
+    /// midnight the feed must gain a fresh day for the new today and push the
+    /// finished one down (SPEC §10). Nothing else notices — no file changes at
+    /// the rollover — so the day boundary is watched explicitly.
+    private func startDayRolloverWatch() {
+        scheduleDayRollover()
+        // Backstops for the scheduled check: a clock or time-zone change (which
+        // moves midnight), and returning to the app — e.g. after the Mac slept
+        // through the boundary.
+        for name in [Notification.Name.NSCalendarDayChanged,
+                     NSApplication.didBecomeActiveNotification] {
+            dayObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkDayRollover() }
+            })
+        }
+    }
+
+    /// Arms a check just after the next local midnight, then re-arms from there.
+    private func scheduleDayRollover() {
+        dayRollover?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.checkDayRollover()
+                self?.scheduleDayRollover()
+            }
+        }
+        dayRollover = work
+        // A wall-clock deadline (not `.now() + interval`, which stalls while the
+        // machine sleeps), one second past midnight so the day has really turned.
+        DispatchQueue.main.asyncAfter(
+            wallDeadline: .now() + Self.secondsUntilNextDay() + 1, execute: work
+        )
+    }
+
+    /// Re-renders journal home when the calendar day has turned. Pending edits
+    /// are flushed first: the day just ended stays in the feed only while the
+    /// index knows it has blocks, and a debounced save may still be in flight.
+    /// `journalDays()` rebuilds itself on a new today; it just needs re-asking.
+    func checkDayRollover(now: Date = Date()) {
+        let today = JournalDate(date: now).pageName
+        guard today != currentDay else { return }
+        currentDay = today
+        flushPendingSaves()
+        dataVersion += 1
+    }
+
+    /// Seconds from `now` to the next local midnight. Uses calendar arithmetic,
+    /// so DST shifts (including regions where midnight itself is skipped) give a
+    /// real boundary rather than a fixed 24 h step.
+    static func secondsUntilNextDay(from now: Date = Date()) -> TimeInterval {
+        let midnight = Calendar.current.nextDate(
+            after: now,
+            matching: DateComponents(hour: 0, minute: 0, second: 0),
+            matchingPolicy: .nextTime
+        )
+        // No match should be impossible; fall back to an hourly re-check.
+        guard let midnight else { return 3600 }
+        return max(1, midnight.timeIntervalSince(now))
     }
 
     /// Resolves a block target (empty page name + zoom id) to its page, via the
@@ -328,8 +402,7 @@ final class AppState: ObservableObject {
     /// scan runs only when the day *set* changes (a day added, deleted, or
     /// crossing empty↔non-empty), detected via a cheap signature, rather than on
     /// every keystroke. Also rebuilds when the calendar day rolls over.
-    func journalDays() -> [String] {
-        let today = JournalDate.today().pageName
+    func journalDays(today: String = JournalDate.today().pageName) -> [String] {
         let signature = (try? store.cache.journalDaySignature()) ?? "?"
         if signature != journalDaySignature || today != journalCacheToday {
             journalDaySignature = signature
