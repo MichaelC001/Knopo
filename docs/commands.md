@@ -63,7 +63,7 @@ These commands apply while the text caret is inside a block.
 
 | Shortcut | Action |
 |---|---|
-| `Enter` | Split at the caret and create a sibling block below. Inside a fenced code block, insert a newline instead. |
+| `Enter` | Split at the caret and create a sibling block below. Inside a fenced code block or a table, insert a newline instead — in a table that adds a row, and a second `Enter` on the resulting blank row leaves the table. |
 | `⇧Enter` | Insert a newline inside the current block. |
 | `Tab` | Indent the block under the sibling above. Inside a fenced code block, insert a tab. |
 | `⇧Tab` | Outdent the block. Inside a fenced code block, remove one leading tab or up to two spaces from the line. |
@@ -81,7 +81,8 @@ These commands apply while the text caret is inside a block.
 Standard macOS text commands such as `⌘X`, `⌘C`, `⌘V`, and `⌘A` work on a text
 selection. Pasting Markdown list structure creates a corresponding block tree;
 plain multiline text creates one block per line. Multiline paste stays inside a
-quote or fenced-code block.
+quote, fenced-code, or table block, and pasting table-shaped text keeps it in
+one block.
 
 Typing any of these opening markers over selected text wraps it and keeps the
 inner text selected: `[`, backtick, `*`, `~`, `=`, or `$`. Press the marker a

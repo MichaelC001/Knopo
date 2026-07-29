@@ -24,6 +24,8 @@ directory of Markdown.
 - **Queries `{{query …}}`** - a live, read-only result list from a small closed
   filter language: tags, page references, task state, and properties combined with
   `and` / `or` / `not`.
+- **Tables** - GitHub-style pipe tables render as a real grid, fitted to the
+  window (or to their content, per table), with links and tags live inside cells.
 - **Journal** - a daily-notes home that scrolls back through previous days.
 - **References** - linked and unlinked references surfaced per page.
 - **Search & find** - `⌘K` full-text search across the whole graph (SQLite FTS5),

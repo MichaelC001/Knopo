@@ -58,16 +58,17 @@ content. Knopo supports:
 - `[label](https://example.com)` links and bare `http://` or `https://` URLs
 - images, including optional display sizes
 - `TODO` and `DONE` task markers at the start of a block
+- GitHub-style pipe tables (see [Tables](#tables) below)
 - inline `$math$`, currently displayed as styled source rather than typeset math
 
 Underscores do not create emphasis, so names such as `file_name.md` remain
 literal. Put a backslash before a Markdown trigger to escape it; for example,
 `\#not-a-tag` displays as `#not-a-tag` without creating a tag.
 
-Setext headings, footnotes, HTML rendering, and GitHub-style table rendering are
-not supported. Their source is preserved, but unsupported syntax is displayed
-as plain text. A prefix such as `1.` is ordinary block text rather than an
-ordered-list marker. The outline's bullets and indentation define structure.
+Setext headings, footnotes, and HTML rendering are not supported. Their source is
+preserved, but unsupported syntax is displayed as plain text. A prefix such as
+`1.` is ordinary block text rather than an ordered-list marker. The outline's
+bullets and indentation define structure.
 
 Use `⇧Enter` for a newline inside one block. In a fenced code block, plain
 `Enter` also inserts a newline while the caret is inside the fence, and `Tab`
@@ -75,6 +76,43 @@ indents code instead of the outline.
 
 Right-click a bullet and choose **Background Color** to tint that block. The
 color applies to the block itself, not its children.
+
+### Tables
+
+A GitHub-style pipe table is one block. Write a header row, a delimiter row, then
+the data rows — as continuation lines of the same block, so use `⇧Enter` (or just
+`Enter`, which adds a row while the caret is inside a table):
+
+```text
+| Fruit | Qty | Notes |
+| --- | ---: | :---: |
+| Apples | 3 | fresh |
+| Pears | 12 | from [[Marina]] |
+```
+
+The delimiter row is what makes it a table, and it sets each column's alignment:
+`:---` left, `---:` right, `:---:` centred. Without it, lines containing `|` stay
+ordinary text, so a pipe in a sentence is safe. Cells take normal Markdown —
+page references, tags, emphasis, and inline code all work inside them, and
+references in cells appear in backlinks like any others.
+
+Rows are padded or truncated to the header's width, `\|` writes a literal pipe,
+and a `|` inside `` `code` `` does not split a cell.
+
+By default a table is as wide as the row allows. Add a `table-width:: min`
+property line to the block to keep it only as wide as its content needs
+(`table-width:: max` is the default). A table never runs off the edge of the
+window: when its columns do not fit, the widest ones are narrowed until they do.
+The property is part of the block's source, not its rendered output, so it is
+visible while you edit the block and hidden otherwise.
+
+A focused table shows its raw source, with the pipes dimmed — editing happens in
+Markdown, so there is no cell-by-cell editing, and `Tab` still indents the block.
+`Enter` on the blank row left by a previous `Enter` leaves the table and starts a
+new block. Pasting a table keeps it in one block. Cell text does not wrap: an
+over-long cell is shortened with an ellipsis. Where there is no room for a grid —
+backlink rows, hover previews, embeds, query results — a table shows its raw
+Markdown instead.
 
 ## Pages
 
@@ -223,7 +261,12 @@ block's content:
 ```
 
 Properties are displayed below rendered block content and can be used in
-queries. Unbulleted property lines before the page's first block are page-level
+queries. A few properties that only describe how a block looks are treated
+differently: `table-width::` is visible while you edit the block but not in its
+rendered output, and `background-color::` is set from the bullet menu and never
+shown as text at all.
+
+Unbulleted property lines before the page's first block are page-level
 properties:
 
 ```markdown
