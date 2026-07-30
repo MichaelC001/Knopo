@@ -16,6 +16,9 @@ protocol BlockEditorActions: AnyObject {
     func editorToggleTodo()
     func editorEndEditing()
     func editorFocusAdjacent(by delta: Int)
+    /// The caret moved for any reason other than a vertical block hop, so a
+    /// carried-over column is stale.
+    func editorCaretMoved()
     func editorCopySubtreeMarkdown() -> String?
     func editorPasteBlocks(_ text: String)
     func editorImportImageAssets(_ fileURLs: [URL]) -> String?
@@ -407,6 +410,50 @@ final class BlockEditorTextView: NSTextView {
         }
     }
 
+    // MARK: - Caret geometry (carrying the column across blocks)
+
+    /// True while we place the caret ourselves, so the placement doesn't report
+    /// itself as a stray caret move and discard the column being carried.
+    private var isPlacingCaret = false
+
+    /// The caret's horizontal position in view coordinates, or nil when there is
+    /// no layout to ask. Handed to the next block so `↑`/`↓` lands in the same
+    /// column instead of at the end (or start) of the text.
+    var caretX: CGFloat? {
+        caretFrame(forOffset: min(selectedRange().location, (string as NSString).length))?.minX
+    }
+
+    /// Places the caret on the first or last visual line, at `x` in view
+    /// coordinates — what AppKit does for `↑`/`↓` inside one text view, extended
+    /// across a block boundary. Falls back to the line's far edge without layout.
+    func placeCaret(atGoalX x: CGFloat, onFirstLine: Bool) {
+        let ns = string as NSString
+        let fallback = onFirstLine ? 0 : ns.length
+        guard ns.length > 0, let anchor = caretFrame(forOffset: fallback) else {
+            select(offset: fallback)
+            return
+        }
+        let point = NSPoint(x: x, y: anchor.midY)
+        select(offset: min(characterIndexForInsertion(at: point), ns.length))
+    }
+
+    private func select(offset: Int) {
+        isPlacingCaret = true
+        setSelectedRange(NSRange(location: offset, length: 0))
+        isPlacingCaret = false
+    }
+
+    /// The caret rectangle for a UTF-16 offset, in this view's coordinates.
+    /// `firstRect(forCharacterRange:)` answers in screen space and is defined for
+    /// an empty range, which is what a caret is.
+    private func caretFrame(forOffset offset: Int) -> CGRect? {
+        guard let window else { return nil }
+        let screen = firstRect(
+            forCharacterRange: NSRange(location: offset, length: 0), actualRange: nil)
+        guard screen.origin.x.isFinite, screen.origin.y.isFinite else { return nil }
+        return convert(window.convertFromScreen(screen), from: nil)
+    }
+
     /// First/last *visual* line checks (wrap-aware, TextKit 2 safe): compare
     /// the caret's line rect against the rect at the start/end of the text.
     private var caretOnFirstLine: Bool {
@@ -525,6 +572,9 @@ final class BlockEditorTextView: NSTextView {
         if !isSettingContent, let autocomplete, autocomplete.isActive {
             autocomplete.textDidChange(in: self)
         }
+        // Any move we didn't make ourselves (a click, a horizontal step, editing)
+        // ends the vertical run, so the carried column is no longer wanted.
+        if !isPlacingCaret, !isSettingContent { actions?.editorCaretMoved() }
     }
 
     override func resignFirstResponder() -> Bool {

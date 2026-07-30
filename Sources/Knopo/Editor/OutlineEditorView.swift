@@ -207,6 +207,9 @@ final class OutlineEditorController: NSObject {
     /// Last `nav.highlightToken` this outline acted on, so a scroll-to/flash
     /// request fires exactly once per click.
     private var lastHighlightToken = 0
+    /// Column the caret is carrying across `↑`/`↓` block hops, in editor view
+    /// coordinates; nil when the caret last moved for some other reason.
+    private var verticalGoalX: CGFloat?
     /// Block whose bullet context menu is open, for its color submenu actions.
     private var contextMenuBlockID: UUID?
     /// The block currently being rendered, so a `{{query}}` can exclude itself.
@@ -2247,14 +2250,29 @@ extension OutlineEditorController: BlockEditorActions {
         }
     }
 
+    /// `↑`/`↓` off the first/last visual line moves to the adjacent block, landing
+    /// in the same column the caret already occupied — the way a vertical move
+    /// behaves within one text view. The column is carried across consecutive
+    /// hops (a short block in between doesn't pull the caret to its end) and
+    /// dropped as soon as the caret moves for any other reason.
     func editorFocusAdjacent(by delta: Int) {
         guard let id = focusedBlockID,
               let index = rows.firstIndex(where: { $0.block.id == id }) else { return }
         let target = index + delta
         guard rows.indices.contains(target) else { return }
         let block = rows[target].block
+        let goalX = verticalGoalX ?? editor.caretX
+        // Without a column to aim at, fall back to the near edge of the text.
         let caret = delta < 0 ? (block.content as NSString).length : 0
         focusBlock(block.id, selection: NSRange(location: caret, length: 0))
+        guard let goalX else { return }
+        editor.placeCaret(atGoalX: goalX, onFirstLine: delta > 0)
+        // Set last: focusing and placing both report caret moves, which clear it.
+        verticalGoalX = goalX
+    }
+
+    func editorCaretMoved() {
+        verticalGoalX = nil
     }
 
     func editorCopySubtreeMarkdown() -> String? {
