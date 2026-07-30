@@ -148,6 +148,16 @@ enum BlockRenderer {
     /// Ordinal of an image token within one top-level block render. Attached to
     /// the object-replacement character so the row view can rewrite its source.
     static let imageIndexKey = NSAttributedString.Key("knopoImageIndex")
+    /// Source offset (UTF-16, into the block's content) that a rendered run came
+    /// from, so a click in rendered text can be mapped back to the source the
+    /// editor shows. Absent where the mapping isn't tracked (fences, tables,
+    /// quotes, generated regions), and the caller then falls back to clamping.
+    static let sourceOffsetKey = NSAttributedString.Key("knopoSourceOffset")
+    /// Marks a run whose rendered text *is* its source text, so an offset within
+    /// the run carries over character for character. Runs without it map as a
+    /// whole to their token's start (a page ref renders as its title, so an
+    /// offset inside it means nothing in the source).
+    static let sourceVerbatimKey = NSAttributedString.Key("knopoSourceVerbatim")
     /// Marks a rendered table's whole run and carries its column geometry, so
     /// `RenderedTextView` can draw the grid and header band (TextKit 2 has no
     /// `NSTextTable`, so the columns are tab stops and the rules are drawn).
@@ -510,10 +520,17 @@ enum BlockRenderer {
             )
         case .fence(let language, let code):
             let out = NSMutableAttributedString()
+            // Both the language tag and the code are verbatim slices of the
+            // source — the tag three characters past the opening fence, the code
+            // one line further — so a click in either maps exactly.
+            let firstLine = content.components(separatedBy: "\n").first ?? content
+            let codeStart = (firstLine as NSString).length + 1
             if !language.isEmpty {
                 out.append(NSAttributedString(string: language + "\n", attributes: [
                     .font: NSFont.monospacedSystemFont(ofSize: baseFontSize - 3, weight: .semibold),
                     .foregroundColor: NSColor.secondaryLabelColor,
+                    sourceOffsetKey: 3,
+                    sourceVerbatimKey: true,
                 ]))
             }
             // No per-glyph background — the row cell draws one full-width box
@@ -521,14 +538,17 @@ enum BlockRenderer {
             out.append(NSAttributedString(string: code, attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: baseFontSize - 1, weight: .regular),
                 .foregroundColor: NSColor.textColor,
+                sourceOffsetKey: codeStart,
+                sourceVerbatimKey: true,
             ]))
             return out
         case .table(let header, let alignments, let rows):
             return renderTable(header: header, alignments: alignments, rows: rows,
                                context: context, imageIndex: &imageIndex)
         case .heading(let level, let text):
-            return inline(text, baseFont: headingFont(level: level), context: context,
-                          imageIndex: &imageIndex)
+            return inline(text, baseFont: headingFont(level: level),
+                          sourceBase: sourceBase(of: text, in: content),
+                          context: context, imageIndex: &imageIndex)
         case .quote(let text):
             // Every line gets the quote bar; continuation lines may carry
             // their own `> ` marker (stripped) or none (Shift+Enter).
@@ -578,6 +598,7 @@ enum BlockRenderer {
                 baseFont: baseFont(),
                 baseColor: todo == .done ? .secondaryLabelColor : bodyColor,
                 strikethrough: false,
+                sourceBase: sourceBase(of: text, in: content),
                 context: context,
                 imageIndex: &imageIndex
             )
@@ -792,22 +813,40 @@ enum BlockRenderer {
 
     // MARK: - Inline rendering
 
+    /// `sourceBase` is where `text` starts inside the block's content, so the
+    /// runs can record real source offsets (§5.4). Nil where that mapping isn't
+    /// tracked — a table cell or a quote line is lifted out of the content and
+    /// a wrong offset would be worse than none.
     static func inline(
         _ text: String,
         baseFont: NSFont,
         baseColor: NSColor = .textColor,
         strikethrough: Bool = false,
+        sourceBase: Int? = nil,
         context: Context,
         imageIndex: inout Int
     ) -> NSAttributedString {
-        let nodes = InlineParser.parse(text)
         let out = NSMutableAttributedString()
-        appendNodes(nodes, to: out, font: baseFont, color: baseColor,
-                    strike: strikethrough, highlight: false, context: context,
-                    imageIndex: &imageIndex)
+        for span in InlineParser.parseSpans(text) {
+            appendNode(span.node, to: out, font: baseFont, color: baseColor,
+                       strike: strikethrough, highlight: false,
+                       sourceOffset: sourceBase.map { $0 + span.range.location },
+                       context: context, imageIndex: &imageIndex)
+        }
         return out
     }
 
+    /// The offset a block's inline `text` starts at within `content` — the length
+    /// of whatever block marker was stripped (`## `, `TODO `, …).
+    static func sourceBase(of text: String, in content: String) -> Int? {
+        guard !text.isEmpty else { return nil }
+        let range = (content as NSString).range(of: text)
+        return range.location == NSNotFound ? nil : range.location
+    }
+
+    /// Nested nodes (inside emphasis) share their parent's source offset: the
+    /// parser reports ranges for top-level nodes only. A lone `.text` child gets
+    /// the offset past the marker, which makes the common `**bold**` exact.
     private static func appendNodes(
         _ nodes: [InlineNode],
         to out: NSMutableAttributedString,
@@ -815,39 +854,96 @@ enum BlockRenderer {
         color: NSColor,
         strike: Bool,
         highlight: Bool,
+        sourceOffset: Int?,
+        context: Context,
+        imageIndex: inout Int
+    ) {
+        for node in nodes {
+            appendNode(node, to: out, font: font, color: color, strike: strike,
+                       highlight: highlight, sourceOffset: sourceOffset,
+                       context: context, imageIndex: &imageIndex)
+        }
+    }
+
+    /// Source offset for the contents of an emphasis run, i.e. past its marker.
+    private static func insideMarker(_ offset: Int?, _ marker: Int) -> Int? {
+        offset.map { $0 + marker }
+    }
+
+    /// Source offset of the closing delimiter after `text`, given the offset of
+    /// the text itself — where a click on the pill's trailing padding belongs.
+    private static func closingMarker(_ inner: Int?, after text: String) -> Int? {
+        inner.map { $0 + (text as NSString).length }
+    }
+
+    /// Adds a source offset to `attributes` when there is one to add — an absent
+    /// offset must leave the keys off entirely rather than storing an empty value.
+    private static func marked(
+        at offset: Int?, _ attributes: [NSAttributedString.Key: Any]
+    ) -> [NSAttributedString.Key: Any] {
+        guard let offset else { return attributes }
+        var marked = attributes
+        marked[sourceOffsetKey] = offset
+        return marked
+    }
+
+    /// As `marked`, for a run whose rendered text is its source text.
+    private static func verbatim(
+        at offset: Int?, _ attributes: [NSAttributedString.Key: Any]
+    ) -> [NSAttributedString.Key: Any] {
+        guard let offset else { return attributes }
+        var marked = marked(at: offset, attributes)
+        marked[sourceVerbatimKey] = true
+        return marked
+    }
+
+    private static func appendNode(
+        _ node: InlineNode,
+        to out: NSMutableAttributedString,
+        font: NSFont,
+        color: NSColor,
+        strike: Bool,
+        highlight: Bool,
+        sourceOffset: Int?,
         context: Context,
         imageIndex: inout Int
     ) {
         func attrs(_ extra: [NSAttributedString.Key: Any] = [:]) -> [NSAttributedString.Key: Any] {
             var a: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            if let sourceOffset { a[sourceOffsetKey] = sourceOffset }
             if strike { a[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if highlight { a[.backgroundColor] = NSColor.systemYellow.withAlphaComponent(0.35) }
             for (k, v) in extra { a[k] = v }
             return a
         }
 
-        for node in nodes {
-            switch node {
+        switch node {
             case .text(let s):
-                out.append(NSAttributedString(string: s, attributes: attrs()))
+                // Rendered verbatim, so an offset inside this run maps 1:1.
+                out.append(NSAttributedString(
+                    string: s, attributes: attrs([sourceVerbatimKey: true])))
             case .lineBreak:
                 out.append(NSAttributedString(string: "\n", attributes: attrs()))
             case .bold(let inner):
                 appendNodes(inner, to: out, font: bolder(font), color: color,
-                            strike: strike, highlight: highlight, context: context,
-                            imageIndex: &imageIndex)
+                            strike: strike, highlight: highlight,
+                            sourceOffset: insideMarker(sourceOffset, 2),
+                            context: context, imageIndex: &imageIndex)
             case .italic(let inner):
                 appendNodes(inner, to: out, font: withTrait(font, .italic), color: color,
-                            strike: strike, highlight: highlight, context: context,
-                            imageIndex: &imageIndex)
+                            strike: strike, highlight: highlight,
+                            sourceOffset: insideMarker(sourceOffset, 1),
+                            context: context, imageIndex: &imageIndex)
             case .strike(let inner):
                 appendNodes(inner, to: out, font: font, color: color,
-                            strike: true, highlight: highlight, context: context,
-                            imageIndex: &imageIndex)
+                            strike: true, highlight: highlight,
+                            sourceOffset: insideMarker(sourceOffset, 2),
+                            context: context, imageIndex: &imageIndex)
             case .highlight(let inner):
                 appendNodes(inner, to: out, font: font, color: color,
-                            strike: strike, highlight: true, context: context,
-                            imageIndex: &imageIndex)
+                            strike: strike, highlight: true,
+                            sourceOffset: insideMarker(sourceOffset, 2),
+                            context: context, imageIndex: &imageIndex)
             case .code(let s):
                 // Thin spaces give the pill *real* horizontal padding that takes
                 // part in layout — painting the pill wider than the glyphs would
@@ -855,24 +951,30 @@ enum BlockRenderer {
                 // stand in for the dropped backticks in caret-index mapping.)
                 // They keep the proportional font: in the mono font even a
                 // "thin" space is a full fixed-width advance, far too wide.
-                let pad = NSAttributedString(string: "\u{2009}", attributes: attrs([
-                    inlineCodeKey: true,
-                ]))
-                out.append(pad)
-                out.append(NSAttributedString(string: s, attributes: attrs([
-                    .font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular),
-                    .foregroundColor: codeTextColor,
-                    // No `.backgroundColor`: `RenderedTextView` draws a single
-                    // rounded pill over the run (keyed on `inlineCodeKey`).
+                // The code text is its source text one delimiter in, so clicking
+                // inside the pill maps character for character; the padding on
+                // either side stands for the backticks and maps to them.
+                let inner = insideMarker(sourceOffset, 1)
+                out.append(NSAttributedString(string: "\u{2009}", attributes: attrs([
                     inlineCodeKey: true,
                 ])))
-                out.append(pad)
+                out.append(NSAttributedString(string: s, attributes: attrs(verbatim(
+                    at: inner,
+                    [.font: NSFont.monospacedSystemFont(
+                        ofSize: font.pointSize - 1, weight: .regular),
+                     .foregroundColor: codeTextColor,
+                     // No `.backgroundColor`: `RenderedTextView` draws a single
+                     // rounded pill over the run (keyed on `inlineCodeKey`).
+                     inlineCodeKey: true]))))
+                out.append(NSAttributedString(string: "\u{2009}", attributes: attrs(
+                    marked(at: closingMarker(inner, after: s), [inlineCodeKey: true]))))
             case .math(let s):
                 // SwiftMath may slip from v1 (SPEC §15); render source styled.
-                out.append(NSAttributedString(string: s, attributes: attrs([
-                    .font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular),
-                    .foregroundColor: NSColor.systemTeal,
-                ])))
+                out.append(NSAttributedString(string: s, attributes: attrs(verbatim(
+                    at: insideMarker(sourceOffset, 1),
+                    [.font: NSFont.monospacedSystemFont(
+                        ofSize: font.pointSize - 1, weight: .regular),
+                     .foregroundColor: NSColor.systemTeal]))))
             case .link(let label, let url):
                 let dest = URL(string: url) ?? KnopoURL.page(url)
                 // External link: underlined + a trailing ↗ marking that it
@@ -989,7 +1091,6 @@ enum BlockRenderer {
                         .foregroundColor: NSColor.secondaryLabelColor,
                     ])))
                 }
-            }
         }
     }
 

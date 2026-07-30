@@ -1587,10 +1587,31 @@ final class OutlineEditorController: NSObject {
 
     private func focusFromClick(_ id: UUID, renderedIndex: Int) {
         guard let index = rows.firstIndex(where: { $0.block.id == id }) else { return }
-        // Approximate caret placement: rendered text matches raw source for
-        // plain blocks; clamp when markup makes the lengths differ.
         let length = (rows[index].block.content as NSString).length
-        focusBlock(id, selection: NSRange(location: min(max(0, renderedIndex), length), length: 0))
+        let offset = Self.sourceOffset(inRendered: rows[index].rendered, at: renderedIndex)
+            // Nothing recorded (a fence, a table, a generated region): the
+            // rendered text tracks the source closely enough to clamp.
+            ?? min(max(0, renderedIndex), length)
+        focusBlock(id, selection: NSRange(location: min(offset, length), length: 0))
+    }
+
+    /// Where a click in rendered text lands in the block's source. The rendered
+    /// form hides markers and rewrites titles, so the two index spaces differ;
+    /// `BlockRenderer` records each run's source offset and whether the run is
+    /// verbatim, which is what makes an offset *within* a run meaningful.
+    /// Returns nil when the run carries no offset.
+    static func sourceOffset(inRendered rendered: NSAttributedString, at index: Int) -> Int? {
+        guard rendered.length > 0 else { return nil }
+        let probe = min(max(0, index), rendered.length - 1)
+        var effective = NSRange(location: 0, length: 0)
+        guard let offset = rendered.attribute(
+            BlockRenderer.sourceOffsetKey, at: probe, effectiveRange: &effective) as? Int
+        else { return nil }
+        let verbatim = rendered.attribute(
+            BlockRenderer.sourceVerbatimKey, at: probe, effectiveRange: nil) != nil
+        // A verbatim run maps character for character; anything else maps as a
+        // whole to where its token starts in the source.
+        return verbatim ? offset + max(0, min(index, rendered.length) - effective.location) : offset
     }
 
     /// First ~10 blocks of a page for the hover preview popover (SPEC §6.1).

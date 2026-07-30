@@ -37,6 +37,17 @@ public indirect enum InlineNode: Equatable, Sendable {
     case lineBreak
 }
 
+/// One top-level inline node plus the UTF-16 range of the source it came from.
+public struct InlineSpan: Equatable, Sendable {
+    public var node: InlineNode
+    public var range: NSRange
+
+    public init(node: InlineNode, range: NSRange) {
+        self.node = node
+        self.range = range
+    }
+}
+
 /// What a `{{embed …}}` points at.
 public enum EmbedTarget: Equatable, Hashable, Sendable {
     case block(UUID)
@@ -349,14 +360,37 @@ public enum InlineParser {
     }
 
     public static func parse(_ text: String) -> [InlineNode] {
+        parseSpans(text).map(\.node)
+    }
+
+    /// Like `parse`, but each top-level node keeps the UTF-16 range of the source
+    /// it was parsed from. The renderer carries those offsets onto the rendered
+    /// runs so a click in rendered text maps back to the right place in the
+    /// source (SPEC §5.4) — the rendered form drops markers and rewrites titles,
+    /// so the two index spaces don't line up on their own.
+    public static func parseSpans(_ text: String) -> [InlineSpan] {
         let chars = Array(text)
         var nodes: [InlineNode] = []
+        var spans: [NSRange] = []
         var literal = ""
+        var literalStart = 0
         var i = 0
+
+        // Node ranges are reported in UTF-16 (what the editor's selection uses)
+        // while the scanner walks Characters, so map between them up front.
+        var utf16Offsets = [Int](repeating: 0, count: chars.count + 1)
+        for index in chars.indices {
+            utf16Offsets[index + 1] = utf16Offsets[index] + chars[index].utf16.count
+        }
+        func span(_ from: Int, _ to: Int) -> NSRange {
+            NSRange(location: utf16Offsets[from], length: utf16Offsets[to] - utf16Offsets[from])
+        }
 
         func flush() {
             if !literal.isEmpty {
                 nodes.append(.text(literal))
+                // Called at the head of a token, so `i` is where the literal ends.
+                spans.append(span(literalStart, i))
                 literal = ""
             }
         }
@@ -431,6 +465,11 @@ public enum InlineParser {
         while i < chars.count {
             let c = chars[i]
             let prev: Character? = i > 0 ? chars[i - 1] : nil
+            let tokenStart = i
+            if literal.isEmpty { literalStart = tokenStart }
+            // Whatever this iteration appends came from [tokenStart, i) — bar a
+            // literal flushed ahead of the token, which `flush` ranged itself.
+            defer { while spans.count < nodes.count { spans.append(span(tokenStart, i)) } }
 
             switch c {
             case "\\":
@@ -623,7 +662,7 @@ public enum InlineParser {
             }
         }
         flush()
-        return nodes
+        return zip(nodes, spans).map { InlineSpan(node: $0, range: $1) }
     }
 
     /// Parses the inside of `{{…}}` as an embed target, else nil (not an embed).
