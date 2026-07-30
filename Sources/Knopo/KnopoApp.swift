@@ -124,6 +124,19 @@ struct GraphActions {
     let openGraph: () -> Void
 }
 
+/// The graph of the most recently activated window.
+///
+/// `@FocusedValue` is the right answer whenever SwiftUI knows what has focus, but
+/// the outline's editor is an AppKit text view: while it holds first responder,
+/// SwiftUI publishes *no* focused scene value, so every graph-scoped menu command
+/// went disabled — including Undo, which is why `⌘Z` did nothing precisely while
+/// you were editing a block. This is the fallback those commands use.
+@MainActor
+final class ActiveGraph: ObservableObject {
+    static let shared = ActiveGraph()
+    @Published var actions: GraphActions?
+}
+
 struct GraphActionsFocusedKey: FocusedValueKey {
     typealias Value = GraphActions
 }
@@ -176,7 +189,11 @@ struct KnopoApp: App {
 /// graph via `\.graphActions` (so two windows on different graphs each get
 /// their own undo, zoom, etc.).
 private struct GraphCommands: Commands {
-    @FocusedValue(\.graphActions) private var graph: GraphActions?
+    @FocusedValue(\.graphActions) private var focusedGraph: GraphActions?
+    @ObservedObject private var activeGraph = ActiveGraph.shared
+    /// The focused window's graph, or the last activated one when SwiftUI reports
+    /// no focus at all (see `ActiveGraph`).
+    private var graph: GraphActions? { focusedGraph ?? activeGraph.actions }
     /// Drives the Font Weight radio checkmark. Bound to the same UserDefaults
     /// key the setting persists to, so selecting a weight (which writes that
     /// key) re-renders this menu and moves the checkmark.
@@ -288,17 +305,22 @@ private struct GraphView: View {
         _nav = StateObject(wrappedValue: Navigator(app: app))
     }
 
+    private var actions: GraphActions {
+        GraphActions(app: app, openGraph: openGraph)
+    }
+
     var body: some View {
         MainWindow()
             .environmentObject(app)
             .environmentObject(nav)
             .preferredColorScheme(colorScheme)
             .focusedSceneValue(\.navigator, nav)
-            .focusedSceneValue(\.graphActions, GraphActions(app: app, openGraph: openGraph))
+            .focusedSceneValue(\.graphActions, actions)
             // Title bar shows the graph; the per-tab label shows the page
             // (set on the window's tab independently — see WindowConfigurator).
             .navigationTitle(app.store.root.lastPathComponent)
             .background(WindowConfigurator(
+                onActivate: { ActiveGraph.shared.actions = actions },
                 graphName: app.store.root.lastPathComponent, pageTitle: currentTitle))
     }
 
@@ -340,6 +362,9 @@ private final class WindowHookView: NSView {
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
+    /// Called when this window becomes key (and once when it is first set up), so
+    /// menu commands can target the graph you're actually working in.
+    let onActivate: () -> Void
     let graphName: String   // == window.title (set by navigationTitle)
     let pageTitle: String
     private static let frameKey = "KnopoMainWindowFrame"
@@ -426,6 +451,14 @@ private struct WindowConfigurator: NSViewRepresentable {
         // Window → Move Tab to New Window.
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "knopo"
+        // Menu commands target the graph of whichever window is active. Set it
+        // now (this window may already be key) and on every activation after.
+        onActivate()
+        coordinator.observers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+        ) { [onActivate] _ in
+            MainActor.assumeIsolated { onActivate() }
+        })
         if let rect = Self.savedFrame() {
             window.setFrame(rect, display: true)
         }
