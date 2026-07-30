@@ -216,6 +216,38 @@ final class OutlineRowCell: NSTableCellView {
         bullet.isHidden = hidden
     }
 
+    /// Nearest text position for a point in this cell's coordinates — the row's
+    /// dead space (the gutter beside the text, the padding above and below it)
+    /// resolved to a real caret position. Nil while the row is focused: the
+    /// editor is in place and owns its own clicks.
+    func nearestContentIndex(at point: NSPoint) -> Int? {
+        guard !renderedView.isHidden else { return nil }
+        return renderedView.nearestIndex(toClamped: renderedView.convert(point, from: self))
+    }
+
+    /// `NSTableCellView` declines hits on its own background so the table can
+    /// take them for row selection — which here means a click in the gutter or
+    /// the row's padding reaches nothing at all. Claim those, so every part of a
+    /// row puts the caret in that row's text.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let view = super.hitTest(point) { return view }
+        guard let superview, !renderedView.isHidden else { return nil }
+        return bounds.contains(convert(point, from: superview)) ? self : nil
+    }
+
+    /// A click the cell claimed: dead space, so focus this block at the nearest
+    /// position rather than swallowing it.
+    override func mouseDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.isEmpty, event.clickCount == 1,
+              let index = nearestContentIndex(at: convert(event.locationInWindow, from: nil))
+        else {
+            super.mouseDown(with: event)
+            return
+        }
+        callbacks.focusContent(index)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         if isSelectedBlock {
             if isEmbed {
@@ -683,6 +715,18 @@ final class RenderedTextView: NSTextView {
 
     override func rightMouseDown(with event: NSEvent) {
         onContextMenu(event) // block menu; deliberately no super (see onContextMenu)
+    }
+
+    /// Insertion index for a point that may lie outside the text — a click in the
+    /// row's gutter or in the padding above/below the text. Clamping into the
+    /// bounds first makes the answer the nearest real position (start of that
+    /// line to the left, end of it to the right) instead of nothing at all.
+    func nearestIndex(toClamped point: NSPoint) -> Int {
+        let inset = bounds.insetBy(dx: 0, dy: OutlineRowCell.contentInsetV)
+        let clamped = NSPoint(
+            x: min(max(point.x, inset.minX), max(inset.maxX - 1, inset.minX)),
+            y: min(max(point.y, inset.minY), max(inset.maxY - 1, inset.minY)))
+        return characterIndexForInsertion(at: clamped)
     }
 
     private func imageHandle(at point: NSPoint) -> (index: Int, frame: NSRect)? {
