@@ -1075,6 +1075,8 @@ final class OutlineEditorController: NSObject {
             editSessionBefore = app.document(for: pageName)
         }
         focusedBlockID = id
+        // Undo/redo has to be able to close this typing run first (§13).
+        app.closePendingEdit = { [weak self] in self?.closeEditSessionForUndo() }
         // Edit the full source — content plus user `key:: value` lines (§3.2).
         editor.setContent(rows[index].block.editableSource)
         tableView.layoutSubtreeIfNeeded()
@@ -1500,6 +1502,17 @@ final class OutlineEditorController: NSObject {
     /// typing (content or properties) commits without undo entries; this turns
     /// "everything typed in this block since focus" into one undoable change,
     /// so Cmd+Z after editing doesn't jump to a far older state.
+    /// Closes the current typing run so an undo can act on it, then re-baselines
+    /// the run once that undo has landed — otherwise the next close would measure
+    /// against the pre-undo state and push an entry reinstating what was undone.
+    private func closeEditSessionForUndo() {
+        flushEditSessionUndo()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.focusedBlockID != nil else { return }
+            self.editSessionBefore = self.app.document(for: self.pageName)
+        }
+    }
+
     private func flushEditSessionUndo() {
         guard let before = editSessionBefore, let id = focusedBlockID else { return }
         let current = app.document(for: pageName)

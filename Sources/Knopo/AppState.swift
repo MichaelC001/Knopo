@@ -53,6 +53,15 @@ final class AppState: ObservableObject {
     private var undoStack: [UndoEntry] = []
     private var redoStack: [UndoEntry] = []
 
+    /// Closes the focused block's in-progress typing into an undo entry.
+    /// Keystrokes coalesce into one entry per edit session (SPEC §13) and that
+    /// entry doesn't exist until the session closes — which normally happens when
+    /// focus leaves the block. Undo has to close it first, or it steps past the
+    /// edit you just made (and does nothing at all when it's the first edit).
+    /// Registered by whichever outline holds focus; a stale registration is
+    /// harmless, since closing a session with no open session does nothing.
+    var closePendingEdit: (() -> Void)?
+
     init(store: GraphStore) {
         self.store = store
         allPagesCollapsedSections = Set(store.config.allPagesCollapsedSections)
@@ -252,6 +261,7 @@ final class AppState: ObservableObject {
     }
 
     func undo() {
+        closePendingEdit?()
         guard let entry = undoStack.popLast() else { return }
         for doc in entry.before {
             store.updatePage(doc)
@@ -262,6 +272,7 @@ final class AppState: ObservableObject {
     }
 
     func redo() {
+        closePendingEdit?()
         guard let entry = redoStack.popLast() else { return }
         for doc in entry.after {
             store.updatePage(doc)

@@ -38,6 +38,59 @@ import KnopoCore
         #expect(mars < stub)
     }
 
+    /// Keystrokes coalesce into one undo entry per edit session (SPEC §13), and
+    /// that entry doesn't exist until the session closes — so undo has to close
+    /// the open session *before* it pops, or it steps past the edit you just made.
+    /// (Pressing ⌘Z right after deleting a word used to do nothing at all.)
+    @MainActor
+    @Test func undoClosesThePendingEditSessionBeforePopping() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-undo-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks[0].content = "alpha bravo"
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let before = app.document(for: "Notes")
+
+        // Typing/deleting inside the focused block: committed, but deliberately
+        // *not* an undo entry yet.
+        var edited = before
+        edited.blocks[0].content = "alpha"
+        app.commit(edited)
+        #expect(app.document(for: "Notes").blocks[0].content == "alpha")
+
+        // The focused outline registers this; it turns the open session into an
+        // entry. Undo must run it first — otherwise the stack is still empty.
+        // Modelled on the real hook: it pushes only when the content actually
+        // moved, and re-baselines afterwards (an unconditional push would clear
+        // the redo stack and break redo).
+        var sessionBefore = before
+        var closes = 0
+        app.closePendingEdit = { [weak app] in
+            guard let app else { return }
+            let current = app.document(for: "Notes")
+            guard current.blocks[0].content != sessionBefore.blocks[0].content else { return }
+            closes += 1
+            app.commit(current, undoLabel: "Edit Block", before: sessionBefore)
+            sessionBefore = current
+        }
+
+        app.undo()
+        #expect(closes == 1)
+        #expect(app.document(for: "Notes").blocks[0].content == "alpha bravo")
+
+        // What the controller's re-baseline does once the undo has landed.
+        sessionBefore = app.document(for: "Notes")
+        app.redo()
+        #expect(closes == 1) // nothing new to close, so redo isn't discarded
+        #expect(app.document(for: "Notes").blocks[0].content == "alpha")
+    }
+
     /// An app left open over midnight must roll the journal feed over by itself:
     /// nothing on disk changes at the boundary, so without the day watch the feed
     /// keeps offering the finished day as today. Afterwards the new day heads the
