@@ -33,7 +33,7 @@ struct PageScreen: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            OutlineEditorView(pageName: pageName, zoom: zoom)
+            OutlineEditorView(pageName: pageName, zoom: zoom, inPane: inPane)
             if !inPane {
                 Divider().padding(.vertical, 8)
                 ReferencesSection(pageName: pageName)

@@ -14,10 +14,14 @@ struct OutlineEditorView: View {
     @EnvironmentObject var nav: Navigator
     let pageName: String
     var zoom: UUID? = nil
+    /// Whether this outline is a right-sidebar pane (SPEC §5.4): panes are for
+    /// reference, so they never put the caret in a block on their own.
+    var inPane = false
 
     var body: some View {
         OutlineEditorRepresentable(
-            app: app, nav: nav, pageName: pageName, zoom: zoom, dataVersion: app.dataVersion,
+            app: app, nav: nav, pageName: pageName, zoom: zoom,
+            inPane: inPane, dataVersion: app.dataVersion,
             // Reading these here makes the view (and updateNSView) react to find.
             findActive: nav.findActive, findQuery: nav.findQuery,
             findStepToken: nav.findStepToken, findForward: nav.findStepForward,
@@ -32,6 +36,7 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
     let nav: Navigator
     let pageName: String
     let zoom: UUID?
+    let inPane: Bool
     /// @Published on AppState; bumps on external/index changes so
     /// `updateNSView` runs and the controller can diff and reload.
     let dataVersion: Int
@@ -45,6 +50,8 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> OutlineTableView {
         let controller = OutlineEditorController(app: app, nav: nav)
+        controller.inPane = inPane
+        controller.applyPaneRole()
         context.coordinator.controller = controller
         context.coordinator.find = nav.find
         nav.find.register(controller)
@@ -207,6 +214,18 @@ final class OutlineEditorController: NSObject {
     /// Last `nav.highlightToken` this outline acted on, so a scroll-to/flash
     /// request fires exactly once per click.
     private var lastHighlightToken = 0
+    /// Whether this outline is a right-sidebar pane. Panes are for reference: they
+    /// never take focus on presentation, and a main outline may take focus from one
+    /// (§5.4). Applied to the editor by `applyPaneRole`.
+    var inPane = false
+
+    /// Lets other outlines recognise this outline's editor as a pane's, when they
+    /// decide whether taking focus is allowed.
+    func applyPaneRole() {
+        editor.isInPane = inPane
+    }
+    /// The presentation auto-focus has already fired for (see `presentationKey`).
+    private var autoFocusedPresentation: String?
     /// Column the caret is carrying across `↑`/`↓` block hops, in editor view
     /// coordinates; nil when the caret last moved for some other reason.
     private var verticalGoalX: CGFloat?
@@ -432,7 +451,123 @@ final class OutlineEditorController: NSObject {
                 }
             }
         }
+        focusForWritingIfNeeded()
         applyPendingHighlightIfNeeded()
+    }
+
+    /// Text drawn in the one empty block of an otherwise-empty page.
+    static let emptyPageHint = "Start typing, or / for commands"
+
+    /// An outline whose only block is empty would otherwise render as nothing at
+    /// all — no text, and no bullet (an unfocused empty leaf hides it, §5.2). So
+    /// put the caret there instead: the bullet returns, and the editor draws its
+    /// hint. This is where a new journal day and a not-yet-created page land.
+    /// What presenting an outline should do about focus, given its rows.
+    enum WritingFocus: Equatable {
+        /// Put the caret in this block — it is already an empty tail.
+        case focus(UUID)
+        /// Today's journal has content: add a trailing block to write in.
+        case appendTrailing
+        /// Leave focus alone; this outline was opened to read.
+        case none
+    }
+
+    /// A journal day is somewhere you go to *write*, so today's opens ready to
+    /// type — the caret in an empty block at the end, appending one when the day
+    /// already has content. Past days stay quiet (they're opened to read, and a
+    /// caret appended there would dirty an old file). Other pages open ready only
+    /// when there is nothing to read at all: a single empty block, which is what a
+    /// page you've merely linked to looks like.
+    static func writingFocus(
+        forPage pageName: String,
+        isEmptyTail: Bool,
+        tailBlockID: UUID?,
+        rowCount: Int,
+        today: JournalDate = JournalDate.today()
+    ) -> WritingFocus {
+        let isToday = JournalDate(pageName: pageName)?.pageName == today.pageName
+        if isEmptyTail, let tailBlockID {
+            // Blank page, or a trailing block left by an earlier visit — reuse it
+            // rather than stacking another empty block on every visit.
+            return isToday || rowCount == 1 ? .focus(tailBlockID) : .none
+        }
+        return isToday ? .appendTrailing : .none
+    }
+
+    private func focusForWritingIfNeeded() {
+        guard !inPane, focusedBlockID == nil, zoom == nil, !rows.isEmpty,
+              // Once per presentation: `present` runs on every data change, and
+              // re-focusing would yank the caret back after a click elsewhere.
+              autoFocusedPresentation != presentationKey
+        else { return }
+        let tail = rows[rows.count - 1]
+        let intent = Self.writingFocus(
+            forPage: pageName,
+            isEmptyTail: tail.block.content.isEmpty && !tail.hasChildren,
+            tailBlockID: tail.block.id,
+            rowCount: rows.count)
+        guard intent != .none else { return }
+        autoFocusedPresentation = presentationKey
+        // Deferred for the same reason as the hook above — the table has to be
+        // laid out and in a window before the editor can take first responder.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.focusedBlockID == nil else { return }
+            // Never take focus from another *main* outline: the journal feed stacks
+            // one per day, and the midnight rollover adds an empty one while you may
+            // be typing in yesterday's. A right-sidebar pane is different — it is a
+            // reference card, so a page opened to write in supersedes it; the pane
+            // ends its own editing when its editor resigns (`editorFocusLost`).
+            if let focused = self.tableView.window?.firstResponder as? BlockEditorTextView,
+               !focused.isInPane {
+                return
+            }
+            switch intent {
+            case .focus(let id):
+                guard self.rows.contains(where: { $0.block.id == id }) else { return }
+                self.focusBlock(id, selection: NSRange(location: 0, length: 0))
+                self.revealFocusedRow(id)
+            case .appendTrailing:
+                self.appendBlockToWriteIn()
+            case .none:
+                break
+            }
+        }
+    }
+
+    /// Scrolls a programmatically focused block into view. Focusing doesn't scroll
+    /// on its own, and today's journal is easily taller than the window — so the
+    /// caret would land below the fold and `⌘J` would look like it did nothing.
+    /// A row of margin below it keeps the caret off the very edge.
+    private func revealFocusedRow(_ id: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let row = self.rows.firstIndex(where: { $0.block.id == id }) else { return }
+            // The focused row is taller than its rendered form (it holds the
+            // editor), so let the table finish laying out before measuring it.
+            self.tableView.layoutSubtreeIfNeeded()
+            self.tableView.scrollRowToVisible(row)
+            var withMargin = self.tableView.rect(ofRow: row)
+            withMargin.size.height += OutlineRowCell.minRowHeight
+            self.tableView.scrollToVisible(withMargin)
+        }
+    }
+
+    /// Adds the trailing block today's journal opens into. Deliberately *not* a
+    /// `commit`: no save is scheduled, so merely visiting the journal can never
+    /// dirty the file — the block reaches disk only once you type in it (or the
+    /// page is saved for some other reason).
+    private func appendBlockToWriteIn() {
+        var doc = app.document(for: pageName)
+        let block = Block(content: "")
+        doc.blocks.append(block)
+        app.store.updatePage(doc)
+        reloadAndFocus(block.id, selection: NSRange(location: 0, length: 0))
+        revealFocusedRow(block.id)
+    }
+
+    /// Identifies one page/zoom presentation, so auto-focus fires once for it.
+    private var presentationKey: String {
+        "\(pageName)#\(zoom?.uuidString ?? "")"
     }
 
     /// Scrolls to and flashes a block when a result click requested it (and the
@@ -1077,6 +1212,9 @@ final class OutlineEditorController: NSObject {
         focusedBlockID = id
         // Undo/redo has to be able to close this typing run first (§13).
         app.closePendingEdit = { [weak self] in self?.closeEditSessionForUndo() }
+        // A hint only on the sole block of an otherwise-empty page (SPEC §5.4);
+        // set on every attach, so a reused editor never carries a stale one.
+        editor.emptyHint = rows.count == 1 ? Self.emptyPageHint : nil
         // Edit the full source — content plus user `key:: value` lines (§3.2).
         editor.setContent(rows[index].block.editableSource)
         tableView.layoutSubtreeIfNeeded()

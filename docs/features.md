@@ -47,6 +47,19 @@ it.
 Blocks can be empty. An empty leaf hides its bullet when it is not focused, but
 remains available for editing.
 
+**Today's journal opens ready to write.** Whether it is blank or already has
+today's notes in it, the caret starts in an empty block at the end, so you can
+type straight away — and revisiting the day reuses that block rather than adding
+another. Nothing is written by simply opening the journal; the block becomes part
+of the file when you type in it. Past days open quietly, for reading.
+
+Other pages open ready to write only when there is nothing to read yet — a new
+page, or one you have only linked to. There, the single empty block shows a faint
+**Start typing, or / for commands**. That hint is only drawn on screen: it never
+becomes part of the note, so it is never saved or found by search, and it stays out
+of the way once the page has any content. A page with no blocks at all instead
+offers **Click to add a block**.
+
 ### Editing and Markdown
 
 The focused block shows its raw Markdown source. Unfocused blocks show rendered

@@ -34,6 +34,25 @@ final class BlockEditorTextView: NSTextView {
 
     weak var actions: BlockEditorActions?
     weak var autocomplete: AutocompleteController?
+    /// Whether this editor belongs to a right-sidebar pane. A main-region outline
+    /// opening ready to write may take focus *from* a pane, but never from another
+    /// main-region outline (§5.4).
+    var isInPane = false
+    /// Faint hint drawn in this block while it is empty — the outline sets it on
+    /// the sole block of an otherwise-empty page (SPEC §5.4). Drawn, never inserted:
+    /// text in the storage would be saved, indexed, found by `⌘F`, and measured
+    /// into the row height.
+    var emptyHint: String? {
+        didSet {
+            guard emptyHint != oldValue else { return }
+            setAccessibilityPlaceholderValue(emptyHint)
+            needsDisplay = true
+        }
+    }
+    /// Whether the last `draw` painted the hint, so an edit only forces a repaint
+    /// when that actually changes (TextKit repaints glyphs without calling `draw`).
+    private var didDrawHint = false
+
     /// Caret position right after a `[[Page]]` completion's auto-inserted
     /// trailing space. Consumed on the next keystroke: a plain Enter there
     /// removes the space before splitting; anything else keeps it.
@@ -76,6 +95,43 @@ final class BlockEditorTextView: NSTextView {
         isVerticallyResizable = true
         maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                          height: CGFloat.greatestFiniteMagnitude)
+    }
+
+    // MARK: - Empty-block hint
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Background first (`setUp` fills the focused row's accent tint), then the
+        // hint over it — the reverse of `RenderedTextView`, which draws *under* the
+        // glyphs because it has glyphs to draw under.
+        super.draw(dirtyRect)
+        didDrawHint = false
+        guard let hint = emptyHint, string.isEmpty, !hasMarkedText(), superview != nil
+        else { return }
+        let origin = textContainerOrigin
+        let height = BlockRenderer.lineHeight(forSource: "")
+        // One line, truncating: at maximum zoom in a narrow pane the hint is wider
+        // than the row, and wrapping would spill past the row's measured height.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = height
+        paragraph.maximumLineHeight = height
+        paragraph.lineBreakMode = .byTruncatingTail
+        // A hair of inset so the caret doesn't sit on the hint's first glyph.
+        let box = NSRect(x: origin.x + 2, y: origin.y,
+                         width: max(0, bounds.width - origin.x - 2), height: height)
+        NSAttributedString(string: hint, attributes: [
+            .font: Self.editorFont,
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .paragraphStyle: paragraph,
+        ]).draw(with: box, options: [.usesLineFragmentOrigin])
+        didDrawHint = true
+    }
+
+    /// The hint is painted by `draw`, but TextKit 2 repaints glyphs on its own
+    /// layout path without calling it — so an edit that starts or ends the empty
+    /// state has to ask for a redraw, or the hint lingers beside the typed text.
+    private func invalidateHintIfNeeded() {
+        guard emptyHint != nil, didDrawHint != string.isEmpty else { return }
+        needsDisplay = true
     }
 
     /// Keep file drops on the outline table, which inserts each image as a new
@@ -207,12 +263,16 @@ final class BlockEditorTextView: NSTextView {
         pendingTrailingSpaceCaret = nil // editor reused for another block
         guard string != text else {
             applyHighlighting()
+            invalidateHintIfNeeded()
             return
         }
         isSettingContent = true
         string = text
         applyHighlighting()
         isSettingContent = false
+        // The editor moves between blocks, so its text can go non-empty → empty
+        // (or back) with no `didChangeText` at all.
+        invalidateHintIfNeeded()
     }
 
     // MARK: - Key handling (SPEC §5.4, §13)
@@ -557,6 +617,7 @@ final class BlockEditorTextView: NSTextView {
     override func didChangeText() {
         super.didChangeText()
         applyHighlighting()
+        invalidateHintIfNeeded()
         guard !isSettingContent else { return }
         actions?.editorTextDidChange(string)
         autocomplete?.textDidChange(in: self)
