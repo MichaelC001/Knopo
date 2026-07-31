@@ -75,6 +75,18 @@ final class Navigator: ObservableObject {
         }
     }
 
+    /// `⌘J`: the journal. From anywhere else this opens the journal home (today
+    /// plus previous days). Pressing it again, with the feed already showing, opens
+    /// **today's own page** — the feed is for reading back, and a second press means
+    /// "take me to today to write", where the caret lands ready to type (§5.4, §10).
+    func goToJournal() {
+        if current == .journalHome {
+            navigate(to: .page(name: JournalDate.today().pageName))
+        } else {
+            navigate(to: .journalHome)
+        }
+    }
+
     /// Navigate to a just-created page and focus its (empty) first block so the
     /// user can type immediately.
     func navigateToNewPage(named name: String) {

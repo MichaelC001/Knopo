@@ -502,7 +502,7 @@ private struct NavigationCommands: Commands {
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(nav == nil)
             Divider()
-            Button("Today's Journal") { nav?.navigate(to: .journalHome) }
+            Button("Today's Journal") { nav?.goToJournal() }
                 .keyboardShortcut("j", modifiers: .command)
                 .disabled(nav == nil)
             Button("Search") { nav?.searchPresented = true }

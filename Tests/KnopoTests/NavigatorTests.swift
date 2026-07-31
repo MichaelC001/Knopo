@@ -4,6 +4,32 @@ import Testing
 import KnopoCore
 
 @Suite struct NavigatorTests {
+
+    /// `⌘J` is "take me to the journal"; pressed again on the feed it means "take
+    /// me to today to write", so it opens today's own page rather than doing
+    /// nothing (navigating to the target you're already on is a no-op).
+    @MainActor
+    @Test func journalShortcutSecondPressOpensTodaysPage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-nav-journal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = AppState(store: try GraphStore(root: root))
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+
+        // Somewhere else → the feed.
+        nav.navigate(to: .allPages)
+        nav.goToJournal()
+        #expect(nav.current == .journalHome)
+
+        // Already on the feed → today's page.
+        nav.goToJournal()
+        #expect(nav.current == .page(name: JournalDate.today().pageName))
+
+        // And from today's page, back to the feed.
+        nav.goToJournal()
+        #expect(nav.current == .journalHome)
+    }
     @MainActor
     @Test func allPagesCollapseStatePersistsPerGraph() throws {
         let root = FileManager.default.temporaryDirectory

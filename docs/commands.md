@@ -118,7 +118,7 @@ parent is the moving unit and carries its subtree.
 | `⌘F` | Find text in the current page or visible journal days. Repeating it focuses and selects the find text. |
 | `⌘G` | Go to the next find match. |
 | `⇧⌘G` | Go to the previous find match. |
-| `⌘J` | Open today's journal home. |
+| `⌘J` | Open the journal home. Press it again, when the home is already showing, to open today's own page — either way the caret lands in an empty block at the end of today, ready to type. |
 | `⌘[` / `⌘]` | Go back or forward in navigation history. |
 | `⌘O` | Choose or create a graph folder for the focused window. |
 | `⌘T` | Open a new native tab using the last-used graph. |
