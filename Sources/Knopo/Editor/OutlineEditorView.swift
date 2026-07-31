@@ -2165,7 +2165,13 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard rows.indices.contains(row) else { return 26 }
+        guard rows.indices.contains(row) else {
+            // The placeholder row: measure it like an empty block, so it tracks
+            // zoom and density instead of sitting at a fixed height.
+            return OutlineRowCell.height(for: NSAttributedString(), contentWidth:
+                OutlineRowCell.contentWidth(forDepth: 0,
+                                            rowWidth: max(tableView.bounds.width, 100)))
+        }
         let model = rows[row]
         let contentWidth = OutlineRowCell.contentWidth(
             forDepth: model.depth, rowWidth: max(tableView.bounds.width, 100)

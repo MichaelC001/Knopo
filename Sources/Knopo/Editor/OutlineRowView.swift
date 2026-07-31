@@ -1279,7 +1279,6 @@ final class PlaceholderRowCell: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        label.font = NSFont.systemFont(ofSize: 13)
         label.textColor = .tertiaryLabelColor
         addSubview(label)
     }
@@ -1290,8 +1289,24 @@ final class PlaceholderRowCell: NSTableCellView {
 
     override func layout() {
         super.layout()
+        // Scaled and positioned like real block text, so the row doesn't shrink
+        // away from the content at high zoom or drift with the density control.
+        label.font = BlockRenderer.baseFont()
         label.sizeToFit()
-        label.frame.origin = NSPoint(x: OutlineRowCell.gutterWidth, y: 4)
+        // Aligned with where a block's own text would start, so clicking it doesn't
+        // shift the words you're about to replace it with.
+        label.frame.origin = NSPoint(
+            x: OutlineRowCell.gutterWidth,
+            y: OutlineRowCell.verticalPadding + OutlineRowCell.contentInsetV)
+    }
+
+    /// `NSTableCellView` declines hits on its own background, which would leave
+    /// only the label itself clickable while `resetCursorRects` promises the whole
+    /// row — claim the row, as `OutlineRowCell` does.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let view = super.hitTest(point) { return view }
+        guard let superview else { return nil }
+        return bounds.contains(convert(point, from: superview)) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
