@@ -402,7 +402,7 @@ The reference index updates incrementally on every block commit (debounced ~300 
 
 - One journal page per calendar day, named by ISO date `2026-06-10`, displayed using the user's date format setting (default `Jun 10th, 2026`), stored in `journals/`. New journals are created with ISO filenames.
 - **Logseq compatibility:** journal files written by Logseq use the `yyyy_MM_dd` (underscore) filename form. These are recognized as journals and read normally.
-- **Date identity is canonical.** Any spelling of a day — `2026-06-10`, `2026_06_10` — resolves to one journal identity (keyed by the ISO date). So an ISO `[[2026-06-10]]` reference links to an imported underscore-named journal file, with working backlinks, and navigation finds the existing file regardless of separator. (*Title-form* references like `[[Jun 10th, 2026]]` are **not** resolved — that would require a configurable date-title parser; see the design note below.)
+- **Date identity is canonical.** Any spelling of a day — `2026-06-10`, `2026_06_10` — resolves to one journal identity (keyed by the ISO date). So an ISO `[[2026-06-10]]` reference links to an imported underscore-named journal file, with working backlinks, and navigation finds the existing file regardless of separator. The friendly display form — `[[Jun 10th, 2026]]`, which is what Logseq writes into imported notes — folds to the same identity too: it resolves to the day's file with working backlinks instead of becoming a separate stub. Only the one fixed spelling is read (abbreviated or full month, optional ordinal suffix and comma); the display format itself stays a display concern.
 - **Today's page is the app's home view.** The journal home shows today followed by previous days, infinite-scrolling backwards. Empty past days are skipped; today appears even when empty.
 - Today's page (and only today's) is created lazily: the file is written on first content, but the page is always navigable.
 - **Today opens ready to write** (§5.4): the caret starts in an empty block at the end of the day, since a journal is somewhere you go to write rather than read. Past days open quiet.
@@ -412,7 +412,7 @@ The reference index updates incrementally on every block commit (debounced ~300 
 - Journal pages are ordinary pages in every other respect: they can be referenced (`[[2026-06-10]]`), favourited, and they show linked references — this is what makes "what links to this day" work for date references. A date reference renders as the formatted display title ("Jun 10th, 2026") while the file keeps the stable ISO text (§5.1).
 - Typing `/today`, `/tomorrow`, `/yesterday` in a block inserts the corresponding `[[date]]` reference. `/date` opens a calendar to insert `[[date]]` for any chosen day (§5.5.4); free-form natural-language date entry ("next friday") is deferred.
 
-**Design note (deliberate):** Knopo references journals by their stable ISO date and renders the pretty title at display time, rather than storing the human title in the file. This keeps references parser-free and format-stable (changing the display format can never orphan references), at the cost of not resolving title-form date references.
+**Design note (deliberate):** Knopo *writes* journal references as the stable ISO date and renders the pretty title at display time, rather than storing the human title in the file — so changing the display format can never orphan a reference. It *reads* the friendly form as well, which is what makes a Logseq import link up without rewriting anyone's notes.
 
 ---
 
