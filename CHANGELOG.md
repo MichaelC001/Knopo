@@ -2,6 +2,33 @@
 
 Notable changes per release, newest first. Dates are release dates.
 
+## v0.6.0 (2026-08-01)
+
+Tables, and an editing pass: journals open ready to write, clicks and arrows land where you meant, and undo works while you type.
+
+**New**
+- **Tables.** GitHub-style pipe tables render as a real grid, with per-column alignment. Page links, tags, emphasis and inline code all work inside cells, and a reference in a cell shows up in backlinks like any other.
+- A table fills the width of the page. Add a `table-width:: min` property line to keep one only as wide as its content needs.
+- Today's journal opens ready to write: the caret starts in an empty block at the end of the day, whether or not you have written anything yet. Simply opening the journal changes nothing on disk.
+- A page with nothing in it yet shows a faint "Start typing, or / for commands" in its first block.
+- `[[Jun 10th, 2026]]`-style date references resolve to that journal day, so notes imported from Logseq link up instead of leaving stubs.
+
+**Improved**
+- `⌘J` opens the journal; pressing it while the journal home is showing opens today's own page.
+- `↑`/`↓` keep the caret's column when they cross into another block, instead of dropping it at the start or end of the next one.
+- Fenced code blocks edit as code: monospaced, no Markdown styling, and no autocomplete popping up inside them.
+- Page-link autocomplete lists pages you have created ahead of journal days and unwritten stubs.
+- Left open past midnight, the journal home adds the new day itself.
+
+**Fixed**
+- Undo works while you are typing: `⌘Z` now takes back the edit you just made instead of doing nothing.
+- Undo, Redo, zoom, New Tab and the other menu commands no longer grey out while the cursor is in a block.
+- Clicking rendered text puts the caret exactly where you clicked — including after bold, inside a page link, and within inline code or a fenced block.
+- Clicking a row's left gutter, or the padding around its text, focuses that block instead of doing nothing.
+- A journal day written by Logseq (`2026_06_10.md`) and one written by Knopo (`2026-06-10.md`) count as the same day rather than two.
+- Tag and inline-code backgrounds no longer balloon on a line that also holds a large image.
+- The "Click to add a block" placeholder follows the content zoom and line-spacing settings.
+
 ## v0.5.1 (2026-07-23)
 
 A maintenance release: All Pages refinements and a right-sidebar rename fix.
