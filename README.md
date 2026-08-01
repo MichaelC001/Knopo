@@ -81,15 +81,15 @@ codebase.
 
 ## How it compares
 
-|                       | Obsidian | Logseq | Roam Research | Workflowy | Craft | Knopo |
+|                       | Obsidian | Logseq | Roam Res. | Workflowy | &nbsp;&nbsp;&nbsp;&nbsp;Craft&nbsp;&nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp;&nbsp;Knopo&nbsp;&nbsp;&nbsp;&nbsp; |
 | --------------------- | :------: | :----: | :-----------: | :-------: | :---: | :-----: |
-| Open source           | ✗        | ✓      | ✗             | ✗         | ✗     | ✓       |
-| Native (no Electron)  | ✗        | ✗      | ✗             | ✗         | ✓     | ✓       |
-| Local-first markdown  | ✓        | ✓      | ✗             | ✗         | ✗     | ✓       |
-| Outliner (block tree) | ✗        | ✓      | ✓             | ✓         | ✗     | ✓       |
-| Block references      | ✓        | ✓      | ✓             | ✓         | ✓     | ✓       |
-| Embeds / transclusion | ✓        | ✓      | ✓             | ✓         | ✗     | ✓       |
-| Queries               | ✗        | ✓      | ✓             | ✗         | ✗     | ✓       |
+| Open source           | ✗        | ✓      | ✗             | ✗         | ✗     | **✓**       |
+| Native (no Electron)  | ✗        | ✗      | ✗             | ✗         | ✓     | **✓**       |
+| Local-first markdown  | ✓        | ✓      | ✗             | ✗         | ✗     | **✓**       |
+| Outliner (block tree) | ✗        | ✓      | ✓             | ✓         | ✗     | **✓**       |
+| Block references      | ✓        | ✓      | ✓             | ✓         | ✓     | **✓**       |
+| Embeds / transclusion | ✓        | ✓      | ✓             | ✓         | ✗     | **✓**       |
+| Queries               | ✗        | ✓      | ✓             | ✗         | ✗     | **✓**       |
 | Plugins               | ✓        | ✓      | ✓             | ✗         | ✓     | ✗       |
 
 The closest neighbour is **Logseq** - same outliner model, open source, block
@@ -110,7 +110,7 @@ A graph is a directory. Knopo lays out and maintains:
   pages/         # one Markdown file per page
   journals/      # one file per day
   assets/        # pasted/linked images and files
-  .knopo/      # rebuildable cache (SQLite index, config) - safe to delete
+  .knopo/        # rebuildable cache (SQLite index, config) - safe to delete
 ```
 
 The Markdown files are the source of truth; `.knopo/` is derived and can be
@@ -123,7 +123,7 @@ A Swift Package - builds with the Command Line Tools, no Xcode required.
 ```sh
 swift build                                    # build
 ./scripts/test.sh                              # run the test suite (Swift Testing)
-KNOPO_GRAPH=/path/to/graph swift run Knopo # run against a graph folder
+KNOPO_GRAPH=/path/to/graph swift run Knopo     # run against a graph folder
 ```
 
 `KNOPO_GRAPH` defaults to `~/Documents/Knopo`; the folder is created and seeded
