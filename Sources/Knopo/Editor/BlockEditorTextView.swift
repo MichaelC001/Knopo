@@ -488,6 +488,46 @@ final class BlockEditorTextView: NSTextView {
         isPlacingCaret = false
     }
 
+    /// Scrolls the outline so the caret stays on screen.
+    ///
+    /// AppKit's own caret scrolling works on the text view's own bounds, and this
+    /// view is one block tall — the caret is always "visible" inside it, so the
+    /// outline's scroll view never moves on its own. Without this, arrowing or
+    /// typing walks the caret straight past the fold on a page taller than the
+    /// window.
+    func revealCaret() {
+        guard superview != nil, var caret = caretSegmentFrame() else { return }
+        // A line of margin, so the caret comes to rest just inside the edge
+        // rather than flush against it (and the next line is already in view).
+        caret = caret.insetBy(dx: 0, dy: -BlockRenderer.lineHeight(forSource: ""))
+        scrollToVisible(caret)
+    }
+
+    /// The caret's line rectangle in this view's coordinates, straight from
+    /// TextKit. `caretFrame(forOffset:)` goes through screen space, which is only
+    /// defined once the view is on an on-screen window — this one answers
+    /// wherever the text is laid out.
+    private func caretSegmentFrame() -> CGRect? {
+        guard let layout = textLayoutManager, let content = textContentStorage,
+              let location = content.location(content.documentRange.location,
+                                              offsetBy: selectedRange().location)
+        else { return nil }
+        layout.ensureLayout(for: layout.documentRange)
+        var frame: CGRect?
+        layout.enumerateTextSegments(
+            in: NSTextRange(location: location), type: .selection,
+            options: [.rangeNotRequired]
+        ) { _, rect, _, _ in
+            frame = rect
+            return false
+        }
+        guard var caret = frame else { return nil }
+        let origin = textContainerOrigin
+        caret.origin.x += origin.x
+        caret.origin.y += origin.y
+        return caret
+    }
+
     /// The caret rectangle for a UTF-16 offset, in this view's coordinates.
     /// `firstRect(forCharacterRange:)` answers in screen space and is defined for
     /// an empty range, which is what a caret is.

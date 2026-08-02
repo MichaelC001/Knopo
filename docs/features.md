@@ -88,6 +88,10 @@ Use `⇧Enter` for a newline inside one block. In a fenced code block, plain
 `Enter` also inserts a newline while the caret is inside the fence, and `Tab`
 indents code instead of the outline.
 
+On a page taller than the window, the view follows the caret: moving between
+blocks with the arrow keys, pressing `Enter`, or typing past the bottom of the
+window scrolls just enough to keep the caret in sight.
+
 Right-click a bullet and choose **Background Color** to tint that block. The
 color applies to the block itself, not its children.
 

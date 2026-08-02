@@ -1268,6 +1268,12 @@ final class OutlineEditorController: NSObject {
         }
         tableView.window?.makeFirstResponder(editor)
         noteHeightChanged([index])
+        // Deferred, like `revealFocusedRow`: the row's height changes as it takes
+        // the editor, so the caret's place isn't final until the table re-lays out.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.focusedBlockID == id else { return }
+            self.editor.revealCaret()
+        }
     }
 
     func endEditing() {
@@ -2324,6 +2330,9 @@ extension OutlineEditorController: BlockEditorActions {
         if abs(current - updated) > 0.5 {
             noteHeightChanged([index])
         }
+        // After the height update: a keystroke that wrapped a new line has to
+        // scroll against the row's *new* size, not the one it had a moment ago.
+        editor.revealCaret()
     }
 
     func editorSplit(atUTF16Offset offset: Int) {
@@ -2459,12 +2468,19 @@ extension OutlineEditorController: BlockEditorActions {
         focusBlock(block.id, selection: NSRange(location: caret, length: 0))
         guard let goalX else { return }
         editor.placeCaret(atGoalX: goalX, onFirstLine: delta > 0)
+        editor.revealCaret()
         // Set last: focusing and placing both report caret moves, which clear it.
         verticalGoalX = goalX
     }
 
     func editorCaretMoved() {
         verticalGoalX = nil
+        // Only for a caret move in a *focused* editor. `attachEditor` sets the
+        // selection before handing over first responder, and scrolling there
+        // re-lays out the table under the cell we are attaching to — which
+        // detaches the editor again and the block never takes focus at all.
+        guard editor.window?.firstResponder === editor else { return }
+        editor.revealCaret()
     }
 
     func editorCopySubtreeMarkdown() -> String? {
