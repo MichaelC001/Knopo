@@ -105,23 +105,81 @@ enum BlockRenderer {
     /// text storage would be saved, indexed, found by `⌘F`, and measured into the
     /// row height.
     static func drawEmptyHint(_ hint: String, in view: NSTextView) {
-        let font = baseFont()
-        let origin = view.textContainerOrigin
-        let height = lineHeight(forSource: "")
-        // One line, truncating: at maximum zoom in a narrow pane the hint is wider
-        // than the row, and wrapping would spill past the row's measured height.
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        // A hair of inset so the caret doesn't sit on the hint's first glyph.
+        let x = view.textContainerOrigin.x + 2
+        let width = max(0, view.bounds.width - x - 2)
+        guard width > 0 else { return }
+        let attributed = NSAttributedString(string: hint, attributes: [
+            .font: baseFont(),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ])
+        var line = CTLineCreateWithAttributedString(attributed)
+        // At maximum zoom in a narrow pane the hint is wider than the row; a
+        // CTLine never wraps, so truncate rather than let it run off the edge.
+        if CTLineGetTypographicBounds(line, nil, nil, nil) > Double(width) {
+            let ellipsis = CTLineCreateWithAttributedString(
+                NSAttributedString(string: "\u{2026}",
+                                   attributes: attributed.attributes(at: 0, effectiveRange: nil)))
+            if let truncated = CTLineCreateTruncatedLine(line, Double(width), .end, ellipsis) {
+                line = truncated
+            }
+        }
+        context.saveGState()
+        // Core Text draws bottom-up; the text view is flipped.
+        context.textMatrix = .identity
+        context.translateBy(x: 0, y: view.bounds.height)
+        context.scaleBy(x: 1, y: -1)
+        context.textPosition = CGPoint(x: x, y: view.bounds.height - baseline(in: view))
+        CTLineDraw(line, context)
+        context.restoreGState()
+    }
+
+    /// Where the block's first glyph sits, measured from a throwaway TextKit
+    /// layout built exactly like a one-line block.
+    ///
+    /// Blocks pin their line height *below* the font's natural height
+    /// (`lineHeightScale`), and `NSAttributedString.draw` places a clamped line's
+    /// baseline its own way — differently again on macOS 15, where the hint drew
+    /// visibly above the line it stands in for. So the baseline is measured from
+    /// the app's own layout and the glyphs are drawn on it directly. Asking the
+    /// empty view is no good (an empty document has no line fragment to report),
+    /// hence the throwaway layout.
+    private static func baseline(in view: NSTextView) -> CGFloat {
+        view.textContainerOrigin.y + firstBaselineOffset()
+    }
+
+    /// Cached per font/zoom/weight — the measurement is cheap but runs on every
+    /// draw of every empty row otherwise.
+    private static var cachedBaseline: (key: String, offset: CGFloat)?
+
+    /// Distance from a block's line-box top to its first baseline, as TextKit
+    /// lays it out with the app's font and pinned line height.
+    static func firstBaselineOffset() -> CGFloat {
+        let key = "\(baseFontSize)|\(contentWeight.rawValue)|\(density)"
+        if let cached = cachedBaseline, cached.key == key { return cached.offset }
+        let content = NSTextContentStorage()
+        let layout = NSTextLayoutManager()
+        let container = NSTextContainer(
+            size: CGSize(width: 10_000, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.textContainer = container
+        content.addTextLayoutManager(layout)
         let paragraph = NSMutableParagraphStyle()
+        let height = lineHeight(forSource: "")
         paragraph.minimumLineHeight = height
         paragraph.maximumLineHeight = height
-        paragraph.lineBreakMode = .byTruncatingTail
-        // A hair of inset so the caret doesn't sit on the hint's first glyph.
-        let box = NSRect(x: origin.x + 2, y: origin.y,
-                         width: max(0, view.bounds.width - origin.x - 2), height: height)
-        NSAttributedString(string: hint, attributes: [
-            .font: font,
-            .foregroundColor: NSColor.tertiaryLabelColor,
-            .paragraphStyle: paragraph,
-        ]).draw(with: box, options: [.usesLineFragmentOrigin])
+        content.attributedString = NSAttributedString(
+            string: " ", attributes: [.font: baseFont(), .paragraphStyle: paragraph])
+        layout.ensureLayout(for: layout.documentRange)
+        var offset = baseFont().ascender
+        if let fragment = layout.textLayoutFragment(for: layout.documentRange.location),
+           let line = fragment.textLineFragments.first {
+            offset = fragment.layoutFragmentFrame.minY
+                + line.typographicBounds.minY + line.glyphOrigin.y
+        }
+        cachedBaseline = (key, offset)
+        return offset
     }
 
     /// The band behind a table's header row — barely-there, like the grid rules,

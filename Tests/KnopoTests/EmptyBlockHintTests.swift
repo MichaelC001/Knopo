@@ -47,6 +47,33 @@ import KnopoCore
         #expect(view.textStorage?.length == 0)
     }
 
+    /// The hint stands in for text that isn't there, so it has to sit on exactly
+    /// the baseline that text would use. It is *drawn*, not laid out, so nothing
+    /// but this test keeps the two on the same line — and both view classes must
+    /// agree, or the hint would jump when the block takes focus.
+    @Test func hintDrawsOnTheBaselineTheBlocksOwnTextWouldUse() throws {
+        func baseline(of view: NSTextView) throws -> CGFloat {
+            let layout = try #require(view.textLayoutManager)
+            layout.ensureLayout(for: layout.documentRange)
+            let fragment = try #require(
+                layout.textLayoutFragment(for: layout.documentRange.location))
+            let line = try #require(fragment.textLineFragments.first)
+            return fragment.layoutFragmentFrame.minY
+                + line.typographicBounds.minY + line.glyphOrigin.y
+        }
+        let text = "Start typing"
+        let editor = BlockEditorTextView.create()
+        editor.frame = NSRect(x: 0, y: 0, width: 400, height: 40)
+        editor.setContent(text)
+        let rendered = RenderedTextView.create()
+        rendered.frame = NSRect(x: 0, y: 0, width: 400, height: 40)
+        rendered.textStorage?.setAttributedString(
+            BlockRenderer.render(content: text, context: BlockRenderer.Context()))
+
+        #expect(try baseline(of: editor) == BlockRenderer.firstBaselineOffset())
+        #expect(try baseline(of: rendered) == BlockRenderer.firstBaselineOffset())
+    }
+
     /// Clearing the hint (the editor moves to a normal block) must not leave the
     /// previous block's hint behind.
     @Test func hintClearsWhenTheEditorMovesOn() {
