@@ -207,18 +207,36 @@ public final class CacheDB {
                     page.fileExists, stamp?.mtime, stamp?.size,
                 ]
             )
+            // Prepared once and reused for every block. `db.execute(sql:)`
+            // compiles its SQL on each call, and a page indexes ~5 statements per
+            // block — on a few thousand blocks the compilation dominated, and this
+            // runs on the main thread after every pause in typing.
+            let blockColumns = "(id, page_key, parent_id, position, depth, content, todo, collapsed)"
+            let blockValues = "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            let insertBlockOrIgnore = try db.cachedStatement(
+                sql: "INSERT OR IGNORE INTO blocks \(blockColumns) \(blockValues)")
+            let insertBlockPlain = try db.cachedStatement(
+                sql: "INSERT INTO blocks \(blockColumns) \(blockValues)")
+            let insertFTS = try db.cachedStatement(
+                sql: "INSERT INTO blocks_fts (content, block_id, page_key) VALUES (?, ?, ?)")
+            let insertPageRef = try db.cachedStatement(sql: """
+                INSERT INTO page_refs (block_id, page_key, target_key, target_display)
+                VALUES (?, ?, ?, ?)
+                """)
+            let insertBlockRef = try db.cachedStatement(
+                sql: "INSERT INTO block_refs (block_id, page_key, target_id) VALUES (?, ?, ?)")
+            let insertTag = try db.cachedStatement(
+                sql: "INSERT INTO tags (block_id, page_key, tag) VALUES (?, ?, ?)")
+            let insertProp = try db.cachedStatement(
+                sql: "INSERT INTO props (block_id, page_key, key, value) VALUES (?, ?, ?, ?)")
+
             var position = 0
             func walk(_ blocks: [Block], parent: UUID?, depth: Int) throws {
                 for block in blocks {
                     var blockID = block.id
                     var bid = blockID.uuidString.lowercased()
                     func insertBlock(orIgnore: Bool) throws {
-                        try db.execute(
-                            sql: """
-                                INSERT \(orIgnore ? "OR IGNORE " : "")INTO blocks
-                                (id, page_key, parent_id, position, depth, content, todo, collapsed)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
+                        try (orIgnore ? insertBlockOrIgnore : insertBlockPlain).execute(
                             arguments: [
                                 bid, key, parent?.uuidString.lowercased(), position,
                                 depth, block.content, block.todoState?.rawValue,
@@ -240,37 +258,21 @@ public final class CacheDB {
                         try insertBlock(orIgnore: false)
                     }
                     position += 1
-                    try db.execute(
-                        sql: "INSERT INTO blocks_fts (content, block_id, page_key) VALUES (?, ?, ?)",
-                        arguments: [block.content, bid, key]
-                    )
+                    try insertFTS.execute(arguments: [block.content, bid, key])
                     let refs = RefExtractor.extract(from: block.content)
                     for target in refs.pageRefs {
-                        try db.execute(
-                            sql: """
-                            INSERT INTO page_refs (block_id, page_key, target_key, target_display)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            arguments: [bid, key, PageName.key(target), target]
-                        )
+                        try insertPageRef.execute(
+                            arguments: [bid, key, PageName.key(target), target])
                     }
                     for target in refs.blockRefs {
-                        try db.execute(
-                            sql: "INSERT INTO block_refs (block_id, page_key, target_id) VALUES (?, ?, ?)",
-                            arguments: [bid, key, target.uuidString.lowercased()]
-                        )
+                        try insertBlockRef.execute(
+                            arguments: [bid, key, target.uuidString.lowercased()])
                     }
                     for tag in refs.tags {
-                        try db.execute(
-                            sql: "INSERT INTO tags (block_id, page_key, tag) VALUES (?, ?, ?)",
-                            arguments: [bid, key, tag]
-                        )
+                        try insertTag.execute(arguments: [bid, key, tag])
                     }
                     for prop in block.properties {
-                        try db.execute(
-                            sql: "INSERT INTO props (block_id, page_key, key, value) VALUES (?, ?, ?, ?)",
-                            arguments: [bid, key, prop.key, prop.value]
-                        )
+                        try insertProp.execute(arguments: [bid, key, prop.key, prop.value])
                     }
                     try walk(block.children, parent: blockID, depth: depth + 1)
                 }
