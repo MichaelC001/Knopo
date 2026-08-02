@@ -455,9 +455,6 @@ final class OutlineEditorController: NSObject {
         applyPendingHighlightIfNeeded()
     }
 
-    /// Text drawn in the one empty block of an otherwise-empty page.
-    static let emptyPageHint = "Start typing, or / for commands"
-
     /// An outline whose only block is empty would otherwise render as nothing at
     /// all — no text, and no bullet (an unfocused empty leaf hides it, §5.2). So
     /// put the caret there instead: the bullet returns, and the editor draws its
@@ -495,11 +492,27 @@ final class OutlineEditorController: NSObject {
     }
 
     private func focusForWritingIfNeeded() {
-        guard !inPane, focusedBlockID == nil, zoom == nil, !rows.isEmpty,
-              // Once per presentation: `present` runs on every data change, and
-              // re-focusing would yank the caret back after a click elsewhere.
-              autoFocusedPresentation != presentationKey
-        else { return }
+        // Once per presentation: `present` runs on every data change, and
+        // re-focusing would yank the caret back after a click elsewhere.
+        guard focusedBlockID == nil, autoFocusedPresentation != presentationKey else { return }
+        // Nothing at all to show — an emptied file, a preamble-only file, or a
+        // zoom into a childless block. Give the page the block it needs, so every
+        // empty outline looks the same: one blank block with the hint in it.
+        if rows.isEmpty {
+            autoFocusedPresentation = presentationKey
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.rows.isEmpty else { return }
+                let id = self.materialiseFirstBlock()
+                guard self.mayTakeFocus else {
+                    self.reloadAndFocus(nil, selection: nil)
+                    return
+                }
+                self.reloadAndFocus(id, selection: NSRange(location: 0, length: 0))
+                self.revealFocusedRow(id)
+            }
+            return
+        }
+        guard !inPane, zoom == nil else { return }
         let tail = rows[rows.count - 1]
         let intent = Self.writingFocus(
             forPage: pageName,
@@ -511,16 +524,7 @@ final class OutlineEditorController: NSObject {
         // Deferred for the same reason as the hook above — the table has to be
         // laid out and in a window before the editor can take first responder.
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.focusedBlockID == nil else { return }
-            // Never take focus from another *main* outline: the journal feed stacks
-            // one per day, and the midnight rollover adds an empty one while you may
-            // be typing in yesterday's. A right-sidebar pane is different — it is a
-            // reference card, so a page opened to write in supersedes it; the pane
-            // ends its own editing when its editor resigns (`editorFocusLost`).
-            if let focused = self.tableView.window?.firstResponder as? BlockEditorTextView,
-               !focused.isInPane {
-                return
-            }
+            guard let self, self.focusedBlockID == nil, self.mayTakeFocus else { return }
             switch intent {
             case .focus(let id):
                 guard self.rows.contains(where: { $0.block.id == id }) else { return }
@@ -532,6 +536,39 @@ final class OutlineEditorController: NSObject {
                 break
             }
         }
+    }
+
+    /// Whether this outline may put the caret in a block right now. Panes never
+    /// do — they are reference cards. Nor may an outline take focus from another
+    /// *main* one: the journal feed stacks one per day, and the midnight rollover
+    /// adds an empty one while you may be typing in yesterday's. Taking focus from
+    /// a pane *is* allowed; the pane ends its own editing when its editor resigns
+    /// (`editorFocusLost`).
+    private var mayTakeFocus: Bool {
+        guard !inPane else { return false }
+        if let focused = tableView.window?.firstResponder as? BlockEditorTextView,
+           !focused.isInPane {
+            return false
+        }
+        return true
+    }
+
+    /// Creates the block an empty outline needs — a child of the zoom root when
+    /// zoomed. In memory only (no `commit`), so opening a page never writes to it;
+    /// the block reaches disk once you type in it.
+    private func materialiseFirstBlock() -> UUID {
+        var doc = app.document(for: pageName)
+        let block = Block(content: "")
+        if let zoom, let path = doc.blocks.path(to: zoom) {
+            doc.blocks.update(at: path) {
+                $0.children.append(block)
+                $0.collapsed = false
+            }
+        } else {
+            doc.blocks.append(block)
+        }
+        app.store.updatePage(doc)
+        return block.id
     }
 
     /// Scrolls a programmatically focused block into view. Focusing doesn't scroll
@@ -1214,7 +1251,7 @@ final class OutlineEditorController: NSObject {
         app.closePendingEdit = { [weak self] in self?.closeEditSessionForUndo() }
         // A hint only on the sole block of an otherwise-empty page (SPEC §5.4);
         // set on every attach, so a reused editor never carries a stale one.
-        editor.emptyHint = rows.count == 1 ? Self.emptyPageHint : nil
+        editor.emptyHint = rows.count == 1 ? BlockRenderer.emptyBlockHint : nil
         // Edit the full source — content plus user `key:: value` lines (§3.2).
         editor.setContent(rows[index].block.editableSource)
         tableView.layoutSubtreeIfNeeded()
@@ -1798,20 +1835,6 @@ final class OutlineEditorController: NSObject {
             tables: false)) // no room for a grid in a popover (§5.2)
     }
 
-    private func createFirstBlock() {
-        var doc = app.document(for: pageName)
-        let block = Block(content: "")
-        if let zoom, let path = doc.blocks.path(to: zoom) {
-            doc.blocks.update(at: path) {
-                $0.children.append(block)
-                $0.collapsed = false
-            }
-        } else {
-            doc.blocks.append(block)
-        }
-        app.commit(doc, undoLabel: "New Block")
-        reloadAndFocus(block.id, selection: NSRange(location: 0, length: 0))
-    }
 
     // MARK: - Context menu (SPEC §7.1, §13)
 
@@ -2068,19 +2091,12 @@ extension OutlineEditorController: FindParticipant {
 extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        max(rows.count, 1) // one placeholder row when empty
+        rows.count // an empty outline gets a real block instead (§5.4)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?,
                    row: Int) -> NSView? {
-        guard rows.indices.contains(row) else {
-            let cell = tableView.makeView(
-                withIdentifier: PlaceholderRowCell.reuseIdentifier, owner: nil
-            ) as? PlaceholderRowCell ?? PlaceholderRowCell(frame: .zero)
-            cell.identifier = PlaceholderRowCell.reuseIdentifier
-            cell.onClick = { [weak self] in self?.createFirstBlock() }
-            return cell
-        }
+        guard rows.indices.contains(row) else { return nil }
         let model = rows[row]
         let cell = tableView.makeView(
             withIdentifier: OutlineRowCell.reuseIdentifier, owner: nil
@@ -2129,6 +2145,10 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             blockColor: blockColor,
             callbacks: rowCallbacks(for: model.block.id)
         )
+        // The empty-page hint (§5.4). Set on every row — nil for ordinary ones —
+        // so a reused cell never keeps a stale one.
+        cell.setEmptyHint(
+            rows.count == 1 && isEmptyLeaf ? BlockRenderer.emptyBlockHint : nil)
         if model.block.id == focusedBlockID {
             cell.embedEditor(editor)
         } else {
@@ -2165,13 +2185,7 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard rows.indices.contains(row) else {
-            // The placeholder row: measure it like an empty block, so it tracks
-            // zoom and density instead of sitting at a fixed height.
-            return OutlineRowCell.height(for: NSAttributedString(), contentWidth:
-                OutlineRowCell.contentWidth(forDepth: 0,
-                                            rowWidth: max(tableView.bounds.width, 100)))
-        }
+        guard rows.indices.contains(row) else { return OutlineRowCell.minRowHeight }
         let model = rows[row]
         let contentWidth = OutlineRowCell.contentWidth(
             forDepth: model.depth, rowWidth: max(tableView.bounds.width, 100)

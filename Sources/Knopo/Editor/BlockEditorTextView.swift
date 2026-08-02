@@ -107,22 +107,7 @@ final class BlockEditorTextView: NSTextView {
         didDrawHint = false
         guard let hint = emptyHint, string.isEmpty, !hasMarkedText(), superview != nil
         else { return }
-        let origin = textContainerOrigin
-        let height = BlockRenderer.lineHeight(forSource: "")
-        // One line, truncating: at maximum zoom in a narrow pane the hint is wider
-        // than the row, and wrapping would spill past the row's measured height.
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = height
-        paragraph.maximumLineHeight = height
-        paragraph.lineBreakMode = .byTruncatingTail
-        // A hair of inset so the caret doesn't sit on the hint's first glyph.
-        let box = NSRect(x: origin.x + 2, y: origin.y,
-                         width: max(0, bounds.width - origin.x - 2), height: height)
-        NSAttributedString(string: hint, attributes: [
-            .font: Self.editorFont,
-            .foregroundColor: NSColor.tertiaryLabelColor,
-            .paragraphStyle: paragraph,
-        ]).draw(with: box, options: [.usesLineFragmentOrigin])
+        BlockRenderer.drawEmptyHint(hint, in: self)
         didDrawHint = true
     }
 

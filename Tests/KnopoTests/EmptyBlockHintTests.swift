@@ -19,7 +19,7 @@ import KnopoCore
         // view carrying a hint too, so a future shared-instance refactor trips here.
         let view = BlockEditorTextView.create()
         view.frame = NSRect(x: 0, y: 0, width: width, height: 100)
-        view.emptyHint = OutlineEditorController.emptyPageHint
+        view.emptyHint = BlockRenderer.emptyBlockHint
         view.setContent("")
         #expect(BlockEditorTextView.measureHeight(for: "", width: width) == plain)
         #expect(view.string.isEmpty) // the hint never entered the storage
@@ -27,20 +27,31 @@ import KnopoCore
 
     @Test func hintIsNotPartOfTheText() {
         let view = BlockEditorTextView.create()
-        view.emptyHint = OutlineEditorController.emptyPageHint
+        view.emptyHint = BlockRenderer.emptyBlockHint
         view.setContent("")
         #expect(view.string == "")
         #expect(view.textStorage?.length == 0)
         // …and it is exposed to assistive tech instead of being invisible.
         #expect(view.accessibilityPlaceholderValue() as? String
-            == OutlineEditorController.emptyPageHint)
+            == BlockRenderer.emptyBlockHint)
+    }
+
+    /// The rendered row shows the same hint when the block isn't focused — that's
+    /// what a right-sidebar pane, and an outline that couldn't take focus, fall
+    /// back to. One string, one look, focused or not.
+    @Test func theRenderedRowCarriesTheSameHint() {
+        let view = RenderedTextView.create()
+        view.emptyHint = BlockRenderer.emptyBlockHint
+        #expect(view.emptyHint == BlockRenderer.emptyBlockHint)
+        // Still nothing in the text: the hint is drawn, never inserted.
+        #expect(view.textStorage?.length == 0)
     }
 
     /// Clearing the hint (the editor moves to a normal block) must not leave the
     /// previous block's hint behind.
     @Test func hintClearsWhenTheEditorMovesOn() {
         let view = BlockEditorTextView.create()
-        view.emptyHint = OutlineEditorController.emptyPageHint
+        view.emptyHint = BlockRenderer.emptyBlockHint
         view.emptyHint = nil
         #expect(view.accessibilityPlaceholderValue() == nil)
     }

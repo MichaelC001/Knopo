@@ -95,6 +95,35 @@ enum BlockRenderer {
         light: NSColor(srgbRed: 0.42, green: 0.36, blue: 0.64, alpha: 0.10),
         dark: NSColor(srgbRed: 0.72, green: 0.66, blue: 0.88, alpha: 0.16))
 
+    /// Shown in an empty block that is a page's only content (SPEC §5.4) — the
+    /// app's single empty-state affordance, whether the block is focused or not.
+    static let emptyBlockHint = "Start typing, or / for commands"
+
+    /// Draws `hint` where the block's first glyph would go. Both the focused
+    /// editor and the rendered row call this, so the hint doesn't shift or change
+    /// weight when the block takes focus. Drawn, never inserted: hint text in a
+    /// text storage would be saved, indexed, found by `⌘F`, and measured into the
+    /// row height.
+    static func drawEmptyHint(_ hint: String, in view: NSTextView) {
+        let font = baseFont()
+        let origin = view.textContainerOrigin
+        let height = lineHeight(forSource: "")
+        // One line, truncating: at maximum zoom in a narrow pane the hint is wider
+        // than the row, and wrapping would spill past the row's measured height.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = height
+        paragraph.maximumLineHeight = height
+        paragraph.lineBreakMode = .byTruncatingTail
+        // A hair of inset so the caret doesn't sit on the hint's first glyph.
+        let box = NSRect(x: origin.x + 2, y: origin.y,
+                         width: max(0, view.bounds.width - origin.x - 2), height: height)
+        NSAttributedString(string: hint, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .paragraphStyle: paragraph,
+        ]).draw(with: box, options: [.usesLineFragmentOrigin])
+    }
+
     /// The band behind a table's header row — barely-there, like the grid rules,
     /// so the table reads as structure and not as a filled box.
     static let tableHeaderFill = dynamicColor(

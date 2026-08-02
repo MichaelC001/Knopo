@@ -57,8 +57,9 @@ Other pages open ready to write only when there is nothing to read yet — a new
 page, or one you have only linked to. There, the single empty block shows a faint
 **Start typing, or / for commands**. That hint is only drawn on screen: it never
 becomes part of the note, so it is never saved or found by search, and it stays out
-of the way once the page has any content. A page with no blocks at all instead
-offers **Click to add a block**.
+of the way once the page has any content. A page whose file has been emptied, and a block you
+zoom into that has no children, are given a block of their own the same way — so
+every empty page looks alike.
 
 ### Editing and Markdown
 

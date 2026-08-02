@@ -170,6 +170,12 @@ final class OutlineRowCell: NSTableCellView {
         needsLayout = true
     }
 
+    /// Sets the empty-page hint on the rendered view (nil for every ordinary row,
+    /// so a reused cell never keeps a stale one).
+    func setEmptyHint(_ hint: String?) {
+        renderedView.emptyHint = hint
+    }
+
     /// Unfocused: rendered Markdown (SPEC §5.4).
     func showRendered(_ attributed: NSAttributedString) {
         for view in container.subviews
@@ -525,6 +531,14 @@ final class RenderedTextView: NSTextView {
 
     // MARK: Inline pills (code and tags)
 
+    /// Hint for an empty block that is its page's only content — drawn here for
+    /// the *unfocused* case, which is what a right-sidebar pane shows and what an
+    /// outline that couldn't take focus falls back to. The focused editor draws
+    /// the same string at the same place (SPEC §5.4).
+    var emptyHint: String? {
+        didSet { if emptyHint != oldValue { needsDisplay = true } }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         // Behind the glyphs: the table grid, then inline-code and tag
         // backgrounds (a pill inside a cell paints over the header band).
@@ -532,6 +546,9 @@ final class RenderedTextView: NSTextView {
         drawPills(key: BlockRenderer.tagKey, fill: BlockRenderer.tagBackground)
         drawPills(key: BlockRenderer.inlineCodeKey, fill: .secondarySystemFill)
         super.draw(dirtyRect)
+        if let emptyHint, textStorage?.length == 0 {
+            BlockRenderer.drawEmptyHint(emptyHint, in: self)
+        }
     }
 
     /// The grid and header band of a rendered table (SPEC §5.2). TextKit 2 has
@@ -1262,58 +1279,5 @@ final class ImageResizeOverlayView: NSView {
         (label as NSString).draw(
             at: NSPoint(x: badge.minX + 5, y: badge.minY + 3), withAttributes: attributes
         )
-    }
-}
-
-// MARK: - Empty-page placeholder
-
-/// Shown when the (zoomed) outline has no rows; click creates the first block.
-final class PlaceholderRowCell: NSTableCellView {
-
-    static let reuseIdentifier = NSUserInterfaceItemIdentifier("PlaceholderRowCell")
-
-    var onClick: () -> Void = {}
-    private let label = NSTextField(labelWithString: "Click to add a block")
-
-    override var isFlipped: Bool { true }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        label.textColor = .tertiaryLabelColor
-        addSubview(label)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func layout() {
-        super.layout()
-        // Scaled and positioned like real block text, so the row doesn't shrink
-        // away from the content at high zoom or drift with the density control.
-        label.font = BlockRenderer.baseFont()
-        label.sizeToFit()
-        // Aligned with where a block's own text would start, so clicking it doesn't
-        // shift the words you're about to replace it with.
-        label.frame.origin = NSPoint(
-            x: OutlineRowCell.gutterWidth,
-            y: OutlineRowCell.verticalPadding + OutlineRowCell.contentInsetV)
-    }
-
-    /// `NSTableCellView` declines hits on its own background, which would leave
-    /// only the label itself clickable while `resetCursorRects` promises the whole
-    /// row — claim the row, as `OutlineRowCell` does.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        if let view = super.hitTest(point) { return view }
-        guard let superview else { return nil }
-        return bounds.contains(convert(point, from: superview)) ? self : nil
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onClick()
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
