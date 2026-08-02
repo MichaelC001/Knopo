@@ -44,8 +44,12 @@ public struct PageListing: Equatable, Sendable {
 /// block refs, tags, properties, TODO/DONE state, and the containing page's
 /// name and journal date — the §17 index-completeness commitment. Deleting the
 /// file loses nothing but recents.
-public final class CacheDB {
-    private let dbQueue: DatabaseQueue
+public final class CacheDB: @unchecked Sendable {
+    private let dbQueue: AnyDatabaseWriter
+    private let refCacheLock = NSLock()
+    private var refCache: [String: ExtractedRefs] = [:]
+    private var refCacheOrder: [String] = []
+    private let refCacheLimit = 10_000
 
     /// Bumped whenever the *indexing logic* changes (not the schema) so an
     /// existing cache, whose rows were derived by older code, is force-rebuilt
@@ -76,13 +80,15 @@ public final class CacheDB {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        dbQueue = try DatabaseQueue(path: url.path)
+        // A pool lets UI reads continue against the last committed snapshot
+        // while a debounced page reindex runs on the background writer.
+        dbQueue = AnyDatabaseWriter(try DatabasePool(path: url.path))
         try migrate()
     }
 
     /// In-memory database, for tests.
     public init() throws {
-        dbQueue = try DatabaseQueue()
+        dbQueue = AnyDatabaseWriter(try DatabaseQueue())
         try migrate()
     }
 
@@ -259,7 +265,7 @@ public final class CacheDB {
                     }
                     position += 1
                     try insertFTS.execute(arguments: [block.content, bid, key])
-                    let refs = RefExtractor.extract(from: block.content)
+                    let refs = cachedRefs(for: block.content)
                     for target in refs.pageRefs {
                         try insertPageRef.execute(
                             arguments: [bid, key, PageName.key(target), target])
@@ -290,6 +296,32 @@ public final class CacheDB {
                 )
             }
         }
+    }
+
+    private func cachedRefs(for content: String) -> ExtractedRefs {
+        refCacheLock.lock()
+        if let cached = refCache[content] {
+            refCacheLock.unlock()
+            return cached
+        }
+        refCacheLock.unlock()
+
+        let refs = RefExtractor.extract(from: content)
+
+        refCacheLock.lock()
+        if refCache[content] == nil {
+            refCache[content] = refs
+            refCacheOrder.append(content)
+            if refCacheOrder.count > refCacheLimit {
+                let overflow = refCacheOrder.count - refCacheLimit
+                for key in refCacheOrder.prefix(overflow) {
+                    refCache.removeValue(forKey: key)
+                }
+                refCacheOrder.removeFirst(overflow)
+            }
+        }
+        refCacheLock.unlock()
+        return refs
     }
 
     public func removePage(key: String) throws {

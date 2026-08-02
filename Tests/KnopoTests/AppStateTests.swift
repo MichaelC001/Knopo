@@ -4,6 +4,60 @@ import Testing
 import KnopoCore
 
 @Suite struct AppStateTests {
+    @MainActor
+    @Test func rapidDebouncedSavesPersistAndIndexTheLatestEdit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-async-save-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks[0].content = "first snapshot"
+        app.commit(doc)
+
+        // Let the debounce enqueue the first snapshot, then supersede it. The
+        // explicit flush must wait behind that write and leave disk/index on the
+        // newest revision.
+        try await Task.sleep(nanoseconds: 350_000_000)
+        doc.blocks[0].content = "latest snapshot marker"
+        app.commit(doc)
+        app.flushPendingSaves()
+
+        let saved = try String(contentsOf: store.fileURL(forPageNamed: "Notes"), encoding: .utf8)
+        #expect(saved.contains("latest snapshot marker"))
+        #expect(!saved.contains("first snapshot"))
+        #expect(!store.page(named: "Notes").isDirty)
+        #expect(try store.cache.searchBlocks("latest snapshot marker", limit: 10).count == 1)
+    }
+
+    @MainActor
+    @Test func watcherReloadsAnExternalMarkdownEdit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-external-watch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks[0].content = "original"
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let before = app.dataVersion
+        let url = store.fileURL(forPageNamed: "Notes")
+        try Data("- externally changed content\n".utf8).write(to: url, options: .atomic)
+
+        let deadline = Date().addingTimeInterval(2)
+        while app.dataVersion == before && Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(app.dataVersion > before)
+        #expect(app.document(for: "Notes").blocks[0].content == "externally changed content")
+    }
+
     /// Typing `[[Mar` should surface real content pages (Marina, Mars) ahead of
     /// demoted matches — journal days and file-less reference stubs (e.g. a
     /// `[[Mar 1st, 2026]]` reference left by an unconverted Logseq import) — which

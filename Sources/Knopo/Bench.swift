@@ -66,6 +66,25 @@ enum Bench {
         return cpuMS() - before
     }
 
+    /// CPU includes background work; timer lateness measures whether that work
+    /// actually prevented the main run loop from servicing input/display.
+    private static func statsDuringPump(
+        _ seconds: Double, interval: Double = 0.005
+    ) -> (cpu: Double, maxMainStall: Double) {
+        var previous = ProcessInfo.processInfo.systemUptime
+        var maxGap = interval
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
+            let now = ProcessInfo.processInfo.systemUptime
+            maxGap = max(maxGap, now - previous)
+            previous = now
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        let before = cpuMS()
+        pump(seconds)
+        timer.invalidate()
+        return (cpuMS() - before, max(0, maxGap - interval) * 1000)
+    }
+
     private static func findView<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
         if let v = root as? T { return v }
         for sub in root.subviews {
@@ -149,6 +168,14 @@ enum Bench {
         }
         report("  async settle after bump (CPU)", cpuDuringPump(0.5))
 
+        // Normal debounce: unlike `flushPendingSaves` above, persistence should
+        // consume background CPU without creating a corresponding main-loop gap.
+        app.commit(app.document(for: pageName))
+        let debounceStats = statsDuringPump(0.8)
+        report("debounced save background CPU", debounceStats.cpu,
+               suffix: String(format: "  (max main stall %5.1f ms)",
+                              debounceStats.maxMainStall))
+
         time("cache.backlinks") { _ = try? store.cache.backlinks(of: PageName.key(pageName)) }
         time("cache.hasUnlinkedReferences") {
             _ = try? store.cache.hasUnlinkedReferences(toPageNamed: pageName)
@@ -190,6 +217,24 @@ enum Bench {
         }
         report("  async settle after focus (CPU)", cpuDuringPump(0.5))
 
+        if let editor = findView(BlockEditorTextView.self, in: hosting) {
+            editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+            var insertWalls: [Double] = []
+            var deleteWalls: [Double] = []
+            for _ in 0..<30 {
+                insertWalls.append(timed {
+                    editor.insertText("x", replacementRange: editor.selectedRange())
+                })
+            }
+            for _ in 0..<30 {
+                deleteWalls.append(timed { editor.deleteBackward(nil) })
+            }
+            report("single-line insert median", insertWalls.sorted()[insertWalls.count / 2])
+            report("single-line insert max", insertWalls.max() ?? 0)
+            report("single-line backspace median", deleteWalls.sorted()[deleteWalls.count / 2])
+            report("single-line backspace max", deleteWalls.max() ?? 0)
+        }
+
         func cellPointer(atRow row: Int) -> String {
             guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) else {
                 return "nil"
@@ -228,6 +273,7 @@ enum Bench {
         var walls: [Double] = []
         var uiSettles: [Double] = []
         var saveSettles: [Double] = []
+        var mainStalls: [Double] = []
         for i in 1...15 {
             // A huge offset clamps to the end of the block's content — Enter
             // at end of line, the common case.
@@ -236,17 +282,21 @@ enum Bench {
             let ui = cpuDuringPump(0.15)
             // Long enough for the debounced save + reindex + dataVersion
             // re-render to land.
-            let save = cpuDuringPump(0.6)
+            let saveStats = statsDuringPump(0.6)
+            let save = saveStats.cpu
             walls.append(wall)
             uiSettles.append(ui)
             saveSettles.append(save)
+            mainStalls.append(saveStats.maxMainStall)
             report("editorSplit #\(String(format: "%02d", i))", wall,
-                   suffix: String(format: "  (+%5.1f ui, +%5.1f save/re-render CPU)",
-                                  ui, save))
+                   suffix: String(
+                    format: "  (+%5.1f ui, +%5.1f save CPU, %4.1f ms stall)",
+                    ui, save, saveStats.maxMainStall))
         }
         report("editorSplit median wall", walls.sorted()[walls.count / 2])
         report("editorSplit median ui CPU", uiSettles.sorted()[uiSettles.count / 2])
         report("editorSplit median save CPU", saveSettles.sorted()[saveSettles.count / 2])
+        report("editorSplit median main stall", mainStalls.sorted()[mainStalls.count / 2])
         print("bench: done")
     }
 }

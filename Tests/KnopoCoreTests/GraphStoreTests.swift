@@ -3,6 +3,34 @@ import Foundation
 @testable import KnopoCore
 
 @Suite struct GraphStoreTests {
+    @Test func staleSaveSnapshotDoesNotMarkNewerEditsClean() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-stale-save-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks[0].content = "first"
+        store.updatePage(doc)
+        let stale = try #require(store.pageSaveSnapshot(named: "Notes"))
+
+        doc.blocks[0].content = "second"
+        store.updatePage(doc)
+        _ = try store.persistPageSnapshot(stale)
+
+        expectFalse(store.finishPageSave(stale))
+        let current = store.page(named: "Notes")
+        expectEqual(current.blocks[0].content, "second")
+        expectTrue(current.isDirty)
+
+        let latest = try #require(store.pageSaveSnapshot(named: "Notes"))
+        _ = try store.persistPageSnapshot(latest)
+        expectTrue(store.finishPageSave(latest))
+        expectFalse(store.page(named: "Notes").isDirty)
+        let saved = try String(contentsOf: store.fileURL(forPageNamed: "Notes"), encoding: .utf8)
+        expectTrue(saved.contains("second"))
+    }
+
 
     private func makeGraph(_ files: [String: String], journals: [String: String] = [:]) throws -> GraphStore {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

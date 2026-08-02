@@ -88,11 +88,14 @@ final class BlockEditorTextView: NSTextView {
         isContinuousSpellCheckingEnabled = false
         isGrammarCheckingEnabled = false
         // Vertical breathing room inside the focused-row highlight.
-        textContainerInset = NSSize(width: 0, height: 4)
+        textContainerInset = NSSize(width: 0, height: OutlineRowCell.contentInsetV)
         textContainer?.lineFragmentPadding = 0
         textContainer?.widthTracksTextView = true
         textContainer?.size = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        isVerticallyResizable = true
+        // The table row owns the editor's height. Matching the rendered view's
+        // fixed-height TextKit configuration also keeps their first lines at the
+        // same vertical position inside the row.
+        isVerticallyResizable = false
         maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                          height: CGFloat.greatestFiniteMagnitude)
     }
@@ -109,6 +112,29 @@ final class BlockEditorTextView: NSTextView {
         else { return }
         BlockRenderer.drawEmptyHint(hint, in: self)
         didDrawHint = true
+    }
+
+    /// TextKit 2 renders the caret with a child view rather than through
+    /// `drawInsertionPoint`. Empty storage has no paragraph fragment, so AppKit
+    /// gives that view the font's natural 21 pt line instead of Knopo's pinned
+    /// 15 pt block line. Preserve AppKit's position and clamp only the height.
+    private func alignEmptyInsertionIndicator() {
+        guard string.isEmpty else { return }
+        for case let indicator as NSTextInsertionIndicator in subviews {
+            var frame = indicator.frame
+            frame.size.height = BlockRenderer.lineHeight(forSource: "")
+            indicator.frame = frame
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        alignEmptyInsertionIndicator()
+    }
+
+    override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
+        super.updateInsertionPointStateAndRestartTimer(restartFlag)
+        alignEmptyInsertionIndicator()
     }
 
     /// The hint is painted by `draw`, but TextKit 2 repaints glyphs on its own
@@ -500,6 +526,12 @@ final class BlockEditorTextView: NSTextView {
         // A line of margin, so the caret comes to rest just inside the edge
         // rather than flush against it (and the next line is already in view).
         caret = caret.insetBy(dx: 0, dy: -BlockRenderer.lineHeight(forSource: ""))
+        // Keep the whole focused row visible when it fits. For a block taller
+        // than the viewport, the caret remains the only useful scroll target.
+        if let scrollView = enclosingScrollView,
+           bounds.height <= scrollView.contentView.bounds.height {
+            caret = caret.union(bounds)
+        }
         scrollToVisible(caret)
     }
 

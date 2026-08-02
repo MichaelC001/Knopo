@@ -30,7 +30,12 @@ final class AppState: ObservableObject {
     }
 
     private var watcher: FileWatcher?
+    private let pageSaveQueue = DispatchQueue(
+        label: "io.knopo.page-save", qos: .utility)
     private var pendingSaves: [String: DispatchWorkItem] = [:]
+    private var dirtySaveNames: [String: String] = [:]
+    private var saveGenerations: [String: UInt64] = [:]
+    private var internallySavedStamps: [String: CacheDB.FileStamp] = [:]
 
     // Memoized journal-home day list (see `journalDays()`): rebuilt only when
     // the day *set* changes, not on every content edit.
@@ -70,8 +75,9 @@ final class AppState: ObservableObject {
         }
         let watcher = FileWatcher(
             paths: [store.pagesDir.path, store.journalsDir.path]
-        ) { [weak self] in
+        ) { [weak self] changedPaths in
             guard let self else { return }
+            guard self.containsExternalFileChange(changedPaths) else { return }
             // No dataVersion bump here: our own debounced saves trigger this
             // watcher too, and a bump re-renders every visible view. Real
             // external changes bump via `onExternalChange` above.
@@ -194,6 +200,17 @@ final class AppState: ObservableObject {
         scheduleSave(doc.name)
     }
 
+    /// Serializes this synchronous cross-page write behind any debounced edits.
+    /// Otherwise an older queued snapshot of the same page could land after the
+    /// newly persisted `id::` property and remove it again.
+    func persistBlockID(_ id: UUID, inPageNamed name: String) throws {
+        flushPendingSaves()
+        try store.persistBlockID(id, inPageNamed: name)
+        let document = store.page(named: name)
+        recordInternalSave(
+            of: document, stamp: GraphStore.stamp(of: store.fileURL(forPageNamed: name)))
+    }
+
     /// Toggles a block's TODO/DONE state wherever the block lives — the block
     /// clicked in a query result or embed may belong to another page. Saves
     /// immediately (not on the debounce) so `cache.runQuery` reflects the change
@@ -216,40 +233,126 @@ final class AppState: ObservableObject {
 
     private func scheduleSave(_ name: String) {
         let key = PageName.key(name)
+        let generation = saveGenerations[key, default: 0] &+ 1
+        saveGenerations[key] = generation
+        dirtySaveNames[key] = name
         pendingSaves[key]?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard self.saveGenerations[key] == generation else { return }
             self.pendingSaves[key] = nil
-            try? self.store.savePage(named: name)
-            self.dataVersion += 1
+            self.enqueuePageSave(named: name, key: key, generation: generation)
         }
         pendingSaves[key] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func enqueuePageSave(named name: String, key: String, generation: UInt64) {
+        guard let snapshot = store.pageSaveSnapshot(named: name) else {
+            // A file-less empty stub has nothing to persist.
+            dirtySaveNames[key] = nil
+            return
+        }
+        let persistence = store.pagePersistence
+        pageSaveQueue.async { [weak self] in
+            let result = Result { try persistence.persist(snapshot) }
+            DispatchQueue.main.async {
+                self?.completePageSave(
+                    snapshot, key: key, generation: generation, result: result)
+            }
+        }
+    }
+
+    private func completePageSave(
+        _ snapshot: GraphStore.PageSaveSnapshot,
+        key: String,
+        generation: UInt64,
+        result: Result<CacheDB.FileStamp?, Error>
+    ) {
+        guard case .success(let stamp) = result else { return }
+        let isCurrent = store.finishPageSave(snapshot)
+        guard dirtySaveNames[key] != nil,
+              saveGenerations[key] == generation,
+              isCurrent else { return }
+        dirtySaveNames[key] = nil
+        recordInternalSave(of: snapshot.document, stamp: stamp)
+        dataVersion += 1
     }
 
     /// Saves one page now and drops its pending debounce — used when a change
     /// must hit the index immediately (a TODO toggle feeding a query re-render).
     private func flushPendingSave(forPage name: String) {
         let key = PageName.key(name)
-        pendingSaves[key]?.cancel()
-        pendingSaves[key] = nil
-        try? store.savePage(named: name)
-        dataVersion += 1
+        flushSaveKeys([key])
     }
 
     func flushPendingSaves() {
-        for (key, work) in pendingSaves {
-            work.cancel()
-            if let doc = storeLoadedDoc(key) {
-                try? store.savePage(named: doc.name)
-            }
-        }
-        if !pendingSaves.isEmpty { dataVersion += 1 }
-        pendingSaves = [:]
+        flushSaveKeys(Set(dirtySaveNames.keys))
     }
 
-    private func storeLoadedDoc(_ key: String) -> PageDocument? {
-        store.isLoaded(key) ? store.page(named: key) : nil
+    private func flushSaveKeys(_ keys: Set<String>) {
+        guard !keys.isEmpty else { return }
+        for key in keys {
+            pendingSaves[key]?.cancel()
+            pendingSaves[key] = nil
+        }
+        let jobs = keys.compactMap { key -> (
+            key: String, generation: UInt64, snapshot: GraphStore.PageSaveSnapshot
+        )? in
+            guard let name = dirtySaveNames[key],
+                  let snapshot = store.pageSaveSnapshot(named: name) else {
+                dirtySaveNames[key] = nil
+                return nil
+            }
+            return (key, saveGenerations[key, default: 0], snapshot)
+        }
+        let persistence = store.pagePersistence
+        let results = pageSaveQueue.sync {
+            jobs.map { job in
+                (job, Result { try persistence.persist(job.snapshot) })
+            }
+        }
+        var changed = false
+        for (job, result) in results {
+            guard case .success(let stamp) = result else { continue }
+            let isCurrent = store.finishPageSave(job.snapshot)
+            guard dirtySaveNames[job.key] != nil,
+                  saveGenerations[job.key] == job.generation,
+                  isCurrent else { continue }
+            dirtySaveNames[job.key] = nil
+            recordInternalSave(of: job.snapshot.document, stamp: stamp)
+            changed = true
+        }
+        if changed { dataVersion += 1 }
+    }
+
+    private func recordInternalSave(
+        of document: PageDocument, stamp: CacheDB.FileStamp?
+    ) {
+        guard let stamp else { return }
+        internallySavedStamps[canonicalPath(store.fileURL(forPageNamed: document.name))] = stamp
+    }
+
+    /// File writes generate FSEvents too. If every changed Markdown path still
+    /// has the exact stamp produced by our writer, a graph scan can only confirm
+    /// work that just completed. A differing/missing stamp is an external edit.
+    private func containsExternalFileChange(_ paths: Set<String>?) -> Bool {
+        guard let paths else { return true }
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            guard url.pathExtension.lowercased() == "md" else { continue }
+            let canonical = canonicalPath(url)
+            guard let expected = internallySavedStamps[canonical],
+                  GraphStore.stamp(of: url) == expected else {
+                internallySavedStamps[canonical] = nil
+                return true
+            }
+        }
+        return false
+    }
+
+    private func canonicalPath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     // MARK: - Undo / redo
@@ -265,8 +368,9 @@ final class AppState: ObservableObject {
         guard let entry = undoStack.popLast() else { return }
         for doc in entry.before {
             store.updatePage(doc)
-            try? store.savePage(named: doc.name)
+            scheduleSave(doc.name)
         }
+        flushPendingSaves()
         redoStack.append(entry)
         dataVersion += 1
     }
@@ -276,8 +380,9 @@ final class AppState: ObservableObject {
         guard let entry = redoStack.popLast() else { return }
         for doc in entry.after {
             store.updatePage(doc)
-            try? store.savePage(named: doc.name)
+            scheduleSave(doc.name)
         }
+        flushPendingSaves()
         undoStack.append(entry)
         dataVersion += 1
     }

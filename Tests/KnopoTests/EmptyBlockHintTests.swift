@@ -32,8 +32,25 @@ import KnopoCore
         #expect(view.string == "")
         #expect(view.textStorage?.length == 0)
         // …and it is exposed to assistive tech instead of being invisible.
-        #expect(view.accessibilityPlaceholderValue() as? String
-            == BlockRenderer.emptyBlockHint)
+        #expect(view.accessibilityPlaceholderValue() == BlockRenderer.emptyBlockHint)
+    }
+
+    @Test func emptyTextKit2InsertionIndicatorUsesThePinnedBlockLineHeight() {
+        let view = BlockEditorTextView.create()
+        view.setContent("")
+        let indicator = NSTextInsertionIndicator(frame: NSRect(
+            x: 0, y: OutlineRowCell.contentInsetV, width: 0, height: 21))
+        view.addSubview(indicator)
+        view.layout()
+
+        #expect(indicator.frame.origin == NSPoint(x: 0, y: OutlineRowCell.contentInsetV))
+        #expect(indicator.frame.width == 0)
+        #expect(indicator.frame.height == BlockRenderer.lineHeight(forSource: ""))
+
+        view.setContent("real text")
+        indicator.frame.size.height = 21
+        view.layout()
+        #expect(indicator.frame.height == 21)
     }
 
     /// The rendered row shows the same hint when the block isn't focused — that's

@@ -18,12 +18,51 @@ public enum GraphError: LocalizedError {
 /// (SPEC §2, §4.1). Owns file IO, the cache index, and config; pages are the
 /// source of truth, everything else is derived.
 public final class GraphStore {
+    /// Immutable input for page persistence. `revision` ties a completed write
+    /// back to the in-memory version it came from, so a slow older save cannot
+    /// mark newer edits clean.
+    public struct PageSaveSnapshot: Sendable {
+        public let document: PageDocument
+        fileprivate let revision: UInt64
+    }
+
+    /// The thread-safe half of GraphStore persistence. It owns no loaded-page or
+    /// configuration state, so AppState can use it from its serial save queue.
+    public final class PagePersistence: @unchecked Sendable {
+        private let root: URL
+        private let cache: CacheDB
+
+        fileprivate init(root: URL, cache: CacheDB) {
+            self.root = root
+            self.cache = cache
+        }
+
+        @discardableResult
+        public func persist(
+            _ snapshot: PageSaveSnapshot
+        ) throws -> CacheDB.FileStamp? {
+            var doc = snapshot.document
+            let text = PageSerializer.serialize(preamble: doc.preamble, blocks: doc.blocks)
+            let directory = doc.isJournal ? "journals" : "pages"
+            let url = root.appendingPathComponent(directory, isDirectory: true)
+                .appendingPathComponent(PageName.fileName(for: doc.name))
+            try Data(text.utf8).write(to: url, options: .atomic)
+            doc.fileExists = true
+            doc.isDirty = false
+            let stamp = GraphStore.stamp(of: url)
+            try cache.indexPage(doc, stamp: stamp)
+            return stamp
+        }
+    }
+
     public let root: URL
     public let cache: CacheDB
+    public let pagePersistence: PagePersistence
     public private(set) var config: GraphConfig
 
     /// In-memory documents (parsed on demand). Key = normalized page name.
     private var loaded: [String: PageDocument] = [:]
+    private var loadedRevisions: [String: UInt64] = [:]
 
     /// Called after pages change on disk behind the app's back (external edits).
     public var onExternalChange: ((Set<String>) -> Void)?
@@ -42,7 +81,9 @@ public final class GraphStore {
                     root.appendingPathComponent(".knopo")] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        self.cache = try CacheDB(url: root.appendingPathComponent(".knopo/cache.db"))
+        let cache = try CacheDB(url: root.appendingPathComponent(".knopo/cache.db"))
+        self.cache = cache
+        self.pagePersistence = PagePersistence(root: root, cache: cache)
         self.config = GraphConfig.load(from: root.appendingPathComponent(".knopo/config.json"))
         // A cache built by older indexing logic is fully rebuilt (incremental
         // sync would otherwise skip unchanged files and keep stale rows).
@@ -118,7 +159,7 @@ public final class GraphStore {
         return regular + journals.map { (key, j) in (j.url, j.name, key, true) }
     }
 
-    static func stamp(of url: URL) -> CacheDB.FileStamp? {
+    public static func stamp(of url: URL) -> CacheDB.FileStamp? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let mtime = attrs[.modificationDate] as? Date,
               let size = attrs[.size] as? Int else { return nil }
@@ -176,25 +217,51 @@ public final class GraphStore {
         var d = doc
         d.isDirty = true
         loaded[d.nameKey] = d
+        loadedRevisions[d.nameKey, default: 0] &+= 1
     }
 
     /// Serializes and writes the page, then reindexes it. Stubs with no real
     /// content stay file-less (lazy creation, SPEC §3.2, §10).
     public func savePage(named name: String) throws {
+        guard let snapshot = pageSaveSnapshot(named: name) else { return }
+        _ = try persistPageSnapshot(snapshot)
+        finishPageSave(snapshot)
+    }
+
+    /// Captures only main-thread-owned state. The returned value is independent
+    /// of `loaded` and can be serialized/indexed by a background writer.
+    public func pageSaveSnapshot(named name: String) -> PageSaveSnapshot? {
         let key = PageName.key(name)
-        guard var doc = loaded[key] else { return }
+        guard let doc = loaded[key] else { return nil }
         if !doc.fileExists && doc.isEffectivelyEmpty {
-            // Still index it if it's a journal day so it shows in the sidebar?
-            // No: empty days are skipped (SPEC §10); nothing to persist.
-            return
+            // Empty journal days and reference stubs remain file-less (§10).
+            return nil
         }
-        let text = PageSerializer.serialize(preamble: doc.preamble, blocks: doc.blocks)
-        let url = fileURL(forPageNamed: doc.name)
-        try Data(text.utf8).write(to: url, options: .atomic)
-        doc.fileExists = true
-        doc.isDirty = false
-        loaded[key] = doc
-        try cache.indexPage(doc, stamp: Self.stamp(of: url))
+        return PageSaveSnapshot(
+            document: doc, revision: loadedRevisions[key, default: 0])
+    }
+
+    /// Performs no access to mutable in-memory graph state: only immutable paths,
+    /// the supplied value snapshot, and CacheDB's thread-safe writer are touched.
+    /// AppState serializes calls to preserve file-write order.
+    @discardableResult
+    public func persistPageSnapshot(
+        _ snapshot: PageSaveSnapshot
+    ) throws -> CacheDB.FileStamp? {
+        try pagePersistence.persist(snapshot)
+    }
+
+    /// Reconciles a completed snapshot with the live document. Returns true only
+    /// when no edit superseded the snapshot.
+    @discardableResult
+    public func finishPageSave(_ snapshot: PageSaveSnapshot) -> Bool {
+        let key = snapshot.document.nameKey
+        guard var current = loaded[key] else { return false }
+        current.fileExists = true
+        let isCurrent = loadedRevisions[key, default: 0] == snapshot.revision
+        if isCurrent { current.isDirty = false }
+        loaded[key] = current
+        return isCurrent
     }
 
     public func createPage(named name: String) throws -> PageDocument {
@@ -221,6 +288,7 @@ public final class GraphStore {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
         loaded.removeValue(forKey: key)
+        loadedRevisions.removeValue(forKey: key)
         try cache.removePage(key: key)
         config.removeFavourite(name)
         try saveConfig()
@@ -309,10 +377,12 @@ public final class GraphStore {
         var doc = page(named: oldName)
         _ = rewriteBlocks(&doc.blocks, regex: regex, replacement: "[[\(newName)]]") // self-refs
         let oldURL = fileURL(forPageNamed: doc.name)
+        let renamedRevision = loadedRevisions.removeValue(forKey: oldKey) ?? 0
         loaded.removeValue(forKey: oldKey)
         doc.name = newName
         doc.isJournal = JournalDate(pageName: newName) != nil
         loaded[newKey] = doc
+        loadedRevisions[newKey] = renamedRevision &+ 1
         // Clear the old page from the index *before* re-indexing the same blocks
         // under the new key. Block ids are globally unique (`blocks.id` PRIMARY
         // KEY); a loaded page keeps its ids across the rename, so re-indexing
@@ -405,12 +475,14 @@ public final class GraphStore {
             }
             let doc = Self.read(url: url, name: name, isJournal: isJournal)
             loaded[key] = doc
+            loadedRevisions[key, default: 0] &+= 1
             try cache.indexPage(doc, stamp: stamp)
             affected.insert(key)
         }
         for listing in try cache.allPages() where listing.fileExists && !onDisk.contains(listing.nameKey) {
             try cache.removePage(key: listing.nameKey)
             loaded.removeValue(forKey: listing.nameKey)
+            loadedRevisions.removeValue(forKey: listing.nameKey)
             affected.insert(listing.nameKey)
         }
         if !affected.isEmpty { onExternalChange?(affected) }

@@ -91,6 +91,7 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
 final class OutlineTableView: NSTableView {
 
     var onWidthChange: (() -> Void)?
+    var onLiveResizeEnd: (() -> Void)?
     /// Returns true if the controller consumed the key (node-selection mode).
     var onKeyDown: ((NSEvent) -> Bool)?
     /// A drag left the table (or ended without a drop) — cancels spring-loading.
@@ -178,6 +179,11 @@ final class OutlineTableView: NSTableView {
             onWidthChange?()
         }
     }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        onLiveResizeEnd?()
+    }
 }
 
 // MARK: - Controller
@@ -197,6 +203,12 @@ final class OutlineEditorController: NSObject {
         var path: [Int]
         var hasChildren: Bool
         var rendered: NSAttributedString
+        /// Source represented by `rendered`. The focused row's live block is
+        /// updated on every keystroke while its hidden preview intentionally is
+        /// not, so `block.content` alone cannot validate preview reuse.
+        var renderedContent: String
+        var renderedProperties: [BlockProperty]
+        var renderDependsOnOtherBlocks: Bool
     }
 
     private let app: AppState
@@ -245,6 +257,8 @@ final class OutlineEditorController: NSObject {
     private var renderedWithZoom = BlockRenderer.zoom
     private var renderedWithDensity = BlockRenderer.density
     private var renderedWithWeight = BlockRenderer.contentWeight
+    private var widthRefreshScheduled = false
+    private var needsWidthRefreshAfterLiveResize = false
 
     /// Bullet drag-and-drop (SPEC §5.4). The pasteboard carries only a marker —
     /// the dragged blocks live here, and drops are accepted from this controller
@@ -306,6 +320,7 @@ final class OutlineEditorController: NSObject {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.onWidthChange = { [weak self] in self?.widthDidChange() }
+        tableView.onLiveResizeEnd = { [weak self] in self?.liveResizeDidEnd() }
         tableView.onKeyDown = { [weak self] in self?.handleSelectionKeyDown($0) ?? false }
         tableView.onDragExited = { [weak self] in self?.cancelSpringLoad() }
         tableView.registerForDraggedTypes([Self.blockDragType, .fileURL])
@@ -329,7 +344,7 @@ final class OutlineEditorController: NSObject {
         // Inserting `((uuid))` persists `id::` in the hit's source page (§7.1).
         autocomplete.onBlockRefInserted = { [weak self] hit in
             guard let self else { return }
-            try? self.app.store.persistBlockID(hit.blockID, inPageNamed: hit.pageDisplayName)
+            try? self.app.persistBlockID(hit.blockID, inPageNamed: hit.pageDisplayName)
             self.app.dataVersion += 1
         }
         // `/link`: open the two-field panel at the caret (§5.5.2).
@@ -434,7 +449,7 @@ final class OutlineEditorController: NSObject {
             // A global rendering preference flipped (brackets, content zoom, or
             // text density): re-render the cached rows and re-measure heights.
             reloadAndFocus(focusedBlockID, selection: focusedBlockID != nil
-                ? editor.selectedRange() : nil)
+                ? editor.selectedRange() : nil, reuseStaticRenders: false)
         } else {
             refreshIfChanged()
         }
@@ -679,13 +694,35 @@ final class OutlineEditorController: NSObject {
         return true
     }
 
-    private func rebuildRows() {
+    private func rebuildRows(reusingStaticRendersFrom oldRows: [Row]? = nil) {
         let doc = app.document(for: pageName)
-        rows = OutlineOps.visibleRows(in: doc.blocks, zoomRoot: zoom).map {
-            Row(block: $0.block, depth: $0.depth, path: $0.path,
-                hasChildren: $0.hasChildren, rendered: cachedRender($0.block, depth: $0.depth))
+        let visible = OutlineOps.visibleRows(in: doc.blocks, zoomRoot: zoom)
+        let oldByID = oldRows.map { Dictionary(uniqueKeysWithValues: $0.map { ($0.block.id, $0) }) }
+        rows = visible.map { visibleRow in
+            let old = oldByID?[visibleRow.block.id]
+            let sameRenderedContent = old.map { oldRow in
+                oldRow.renderedContent == visibleRow.block.content
+            } ?? false
+            let dependsOnOtherBlocks = sameRenderedContent
+                ? old!.renderDependsOnOtherBlocks
+                : Self.renderDependsOnOtherBlocks(visibleRow.block.content)
+            let canReuse = sameRenderedContent
+                && old?.renderedProperties == visibleRow.block.properties
+                && old?.depth == visibleRow.depth
+                && !dependsOnOtherBlocks
+            let rendered = canReuse ? old!.rendered
+                : cachedRender(visibleRow.block, depth: visibleRow.depth)
+            return Row(block: visibleRow.block, depth: visibleRow.depth, path: visibleRow.path,
+                       hasChildren: visibleRow.hasChildren, rendered: rendered,
+                       renderedContent: visibleRow.block.content,
+                       renderedProperties: visibleRow.block.properties,
+                       renderDependsOnOtherBlocks: dependsOnOtherBlocks)
         }
         pruneRenderCacheIfNeeded()
+    }
+
+    private static func renderDependsOnOtherBlocks(_ content: String) -> Bool {
+        content.contains("{{query") || content.contains("{{embed") || content.contains("((")
     }
 
     // MARK: - Render/height cache
@@ -1085,10 +1122,12 @@ final class OutlineEditorController: NSObject {
 
     /// Full reload from the store, then re-attaches the shared editor to the
     /// given block (if still visible).
-    private func reloadAndFocus(_ id: UUID?, selection: NSRange?) {
+    private func reloadAndFocus(
+        _ id: UUID?, selection: NSRange?, reuseStaticRenders: Bool = true
+    ) {
         let old = rows
         let previousFocus = focusedBlockID
-        rebuildRows()
+        rebuildRows(reusingStaticRendersFrom: reuseStaticRenders ? old : nil)
         // Move the focus marker BEFORE applying row updates: unlike the old
         // full `reloadData()` (lazy — cells materialized after `attachEditor`
         // updated the marker), row-level reloads reconfigure synchronously, and
@@ -1100,12 +1139,13 @@ final class OutlineEditorController: NSObject {
             rows.contains { $0.block.id == target } ? target : nil
         }
         focusedBlockID = newFocus
-        applyRowChanges(from: old)
+        let reloadedIDs = applyRowChanges(from: old)
         // The row that hosted the editor isn't necessarily in the changed set —
         // Enter at the end of a block leaves its content (and so its cached
         // render) untouched — but its cell is in editing state. Reload it so it
         // shows its rendered content again once the editor moves elsewhere.
         if let previousFocus, previousFocus != newFocus,
+           !reloadedIDs.contains(previousFocus),
            let prevIndex = rows.firstIndex(where: { $0.block.id == previousFocus }) {
             reloadRow(prevIndex)
         }
@@ -1122,17 +1162,17 @@ final class OutlineEditorController: NSObject {
     /// re-lays-out) each visible one — the dominant cost of a structural edit
     /// on a large page, where a split/indent/move touches only a couple of
     /// rows. Unchanged rows keep their live cells untouched.
-    private func applyRowChanges(from old: [Row]) {
+    private func applyRowChanges(from old: [Row]) -> Set<UUID> {
         guard tableView.numberOfRows == old.count else {
             tableView.reloadData()
-            return
+            return Set(rows.map(\.block.id))
         }
         let diff = rows.map(\.block.id).difference(from: old.map(\.block.id))
         // A wholesale change (an external reload re-mints every volatile id)
         // diffs into ~2n edits; a plain reload is cheaper.
         guard diff.count <= max(8, rows.count / 2) else {
             tableView.reloadData()
-            return
+            return Set(rows.map(\.block.id))
         }
         if !diff.isEmpty {
             tableView.beginUpdates()
@@ -1164,18 +1204,27 @@ final class OutlineEditorController: NSObject {
             }
         }
         if !changed.isEmpty {
+            let previousHeights = changed.map { tableView.rect(ofRow: $0).height }
             tableView.reloadData(
                 forRowIndexes: IndexSet(changed), columnIndexes: IndexSet(integer: 0))
-            noteHeightChanged(changed)
+            let heightChanges = zip(changed, previousHeights).compactMap { index, previous in
+                abs(previous - self.tableView(tableView, heightOfRow: index)) > 0.5
+                    ? index : nil
+            }
+            noteHeightChanged(heightChanges)
         }
+        return Set(changed.map { rows[$0].block.id })
     }
 
     private func reloadRow(_ index: Int) {
         guard index >= 0, index < tableView.numberOfRows else { return }
+        let previousHeight = tableView.rect(ofRow: index).height
         tableView.reloadData(
             forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0)
         )
-        noteHeightChanged([index])
+        if abs(previousHeight - self.tableView(tableView, heightOfRow: index)) > 0.5 {
+            noteHeightChanged([index])
+        }
     }
 
     private func noteHeightChanged(_ indexes: [Int]) {
@@ -1202,16 +1251,45 @@ final class OutlineEditorController: NSObject {
     }
 
     private func widthDidChange() {
+        guard !isLiveResizing else {
+            needsWidthRefreshAfterLiveResize = true
+            return
+        }
+        scheduleWidthRefresh()
+    }
+
+    private var isLiveResizing: Bool {
+        tableView.inLiveResize || tableView.window?.inLiveResize == true
+    }
+
+    private func liveResizeDidEnd() {
+        guard needsWidthRefreshAfterLiveResize else { return }
+        needsWidthRefreshAfterLiveResize = false
+        scheduleWidthRefresh()
+    }
+
+    private func scheduleWidthRefresh() {
+        guard !widthRefreshScheduled else { return }
+        widthRefreshScheduled = true
         // Deferred: noteHeightOfRows inside layout would recurse.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.rerenderWidthDependentRows()
-            let count = min(self.rows.count, self.tableView.numberOfRows)
-            if count > 0 {
-                self.noteHeightChanged(Array(0..<count))
-            } else {
-                self.tableView.invalidateIntrinsicContentSize()
+            self.widthRefreshScheduled = false
+            guard !self.isLiveResizing else {
+                self.needsWidthRefreshAfterLiveResize = true
+                return
             }
+            self.refreshRowsForWidth()
+        }
+    }
+
+    private func refreshRowsForWidth() {
+        rerenderWidthDependentRows()
+        let count = min(rows.count, tableView.numberOfRows)
+        if count > 0 {
+            noteHeightChanged(Array(0..<count))
+        } else {
+            tableView.invalidateIntrinsicContentSize()
         }
     }
 
@@ -1254,7 +1332,6 @@ final class OutlineEditorController: NSObject {
         editor.emptyHint = rows.count == 1 ? BlockRenderer.emptyBlockHint : nil
         // Edit the full source — content plus user `key:: value` lines (§3.2).
         editor.setContent(rows[index].block.editableSource)
-        tableView.layoutSubtreeIfNeeded()
         guard let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: true)
             as? OutlineRowCell else { return }
         cell.embedEditor(editor)
@@ -1267,7 +1344,10 @@ final class OutlineEditorController: NSObject {
             ))
         }
         tableView.window?.makeFirstResponder(editor)
-        noteHeightChanged([index])
+        let currentHeight = tableView.rect(ofRow: index).height
+        if abs(currentHeight - self.tableView(tableView, heightOfRow: index)) > 0.5 {
+            noteHeightChanged([index])
+        }
         // Deferred, like `revealFocusedRow`: the row's height changes as it takes
         // the editor, so the caret's place isn't final until the table re-lays out.
         DispatchQueue.main.async { [weak self] in
