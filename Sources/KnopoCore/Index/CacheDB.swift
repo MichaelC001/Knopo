@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 
@@ -46,6 +47,68 @@ public struct PageListing: Equatable, Sendable {
 /// file loses nothing but recents.
 public final class CacheDB: @unchecked Sendable {
     private let dbQueue: AnyDatabaseWriter
+    /// One block as the index stores it, in walk order.
+    private struct FlatBlock {
+        let id: UUID
+        let parent: UUID?
+        let depth: Int
+        let content: String
+        let todo: String?
+        let collapsed: Bool
+        let properties: [BlockProperty]
+        /// Covers everything this block's own rows are derived from.
+        let digest: Data
+    }
+
+    private struct SkeletonEntry {
+        let id: UUID
+        let parent: UUID?
+        let depth: Int
+        var digest: Data
+        var ftsRowID: Int64
+    }
+
+    /// What a page's rows were last built from, so indexing it again can touch
+    /// only the blocks that changed. Purely a cache — absent, or structurally
+    /// mismatched, and the page is rebuilt in full.
+    private struct PageSkeleton {
+        var entries: [SkeletonEntry]
+        var preambleDigest: Data
+
+        /// Same blocks, same nesting, same order. Content may differ.
+        func matches(_ plan: [FlatBlock]) -> Bool {
+            guard entries.count == plan.count else { return false }
+            for (entry, flat) in zip(entries, plan) {
+                if entry.id != flat.id || entry.parent != flat.parent
+                    || entry.depth != flat.depth { return false }
+            }
+            return true
+        }
+    }
+
+    /// Kept for the few most recently indexed pages: editing works on one page,
+    /// while a startup scan touches every page in the graph and must not hold a
+    /// skeleton for each.
+    private let skeletonLock = NSLock()
+    private var skeletons: [String: PageSkeleton] = [:]
+    private var skeletonOrder: [String] = []
+    private let skeletonLimit = 8
+
+    /// How each page index resolved, so the cheap path can be asserted on and
+    /// measured rather than assumed.
+    public struct IndexStats: Equatable, Sendable {
+        public var full = 0
+        public var incremental = 0
+        /// Blocks rewritten by the incremental path.
+        public var blocksRewritten = 0
+    }
+    private var stats = IndexStats()
+    public var indexStats: IndexStats {
+        skeletonLock.lock()
+        defer { skeletonLock.unlock() }
+        return stats
+    }
+
     /// Extracted refs per block, so a page reindex only re-parses blocks whose
     /// text changed. Keyed by **block id**, not content: while you type, the
     /// edited block's content is different on every save, so content keys grew a
@@ -207,6 +270,16 @@ public final class CacheDB: @unchecked Sendable {
             try db.execute(
                 sql: "ALTER TABLE page_refs ADD COLUMN target_display TEXT NOT NULL DEFAULT ''")
         }
+        // Incremental reindexing replaces the rows of a single block, so those
+        // deletes need to find them by block_id rather than scanning the page.
+        migrator.registerMigration("v7-block-id-indexes") { db in
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS page_refs_block ON page_refs(block_id);
+                CREATE INDEX IF NOT EXISTS block_refs_block ON block_refs(block_id);
+                CREATE INDEX IF NOT EXISTS tags_block ON tags(block_id);
+                CREATE INDEX IF NOT EXISTS props_block ON props(block_id);
+                """)
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -221,108 +294,307 @@ public final class CacheDB: @unchecked Sendable {
         }
     }
 
-    /// Replaces all index rows for a page. Pass `stamp` for file-backed pages
-    /// so unchanged files can be skipped on the next startup scan.
+    /// Brings a page's index rows up to date. When the page has the same blocks
+    /// in the same places as last time — the common case while typing — only the
+    /// blocks whose text actually changed are rewritten; anything else rebuilds
+    /// the page. Pass `stamp` for file-backed pages so unchanged files can be
+    /// skipped on the next startup scan.
+    ///
+    /// The full rebuild is a delete-and-reinsert of every row for the page: about
+    /// 1.6 MB of database writes for a 3000-block page, per keystroke at a typing
+    /// cadence that outruns the save debounce.
     public func indexPage(_ page: PageDocument, stamp: FileStamp?) throws {
-        try dbQueue.write { db in
-            let key = page.nameKey
-            try Self.deletePageRows(db, key: key)
-            let journalDate = JournalDate(pageName: page.name)
-            try db.execute(
-                sql: """
-                    INSERT INTO pages
-                    (name_key, display_name, is_journal, journal_date, file_exists, file_mtime, file_size)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    key, page.name, page.isJournal,
-                    page.isJournal ? journalDate?.pageName : nil,
-                    page.fileExists, stamp?.mtime, stamp?.size,
-                ]
-            )
-            // Prepared once and reused for every block. `db.execute(sql:)`
-            // compiles its SQL on each call, and a page indexes ~5 statements per
-            // block — on a few thousand blocks the compilation dominated, and this
-            // runs on the main thread after every pause in typing.
-            let blockColumns = "(id, page_key, parent_id, position, depth, content, todo, collapsed)"
-            let blockValues = "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            let insertBlockOrIgnore = try db.cachedStatement(
-                sql: "INSERT OR IGNORE INTO blocks \(blockColumns) \(blockValues)")
-            let insertBlockPlain = try db.cachedStatement(
-                sql: "INSERT INTO blocks \(blockColumns) \(blockValues)")
-            let insertFTS = try db.cachedStatement(
+        let key = page.nameKey
+        let plan = Self.flatten(page)
+        let preambleDigest = Self.digest(properties: page.preambleProperties)
+        let previous = skeleton(forPageKey: key)
+        var built: PageSkeleton?
+        var rewritten = 0
+        do {
+            try dbQueue.write { db in
+                if let previous, previous.matches(plan) {
+                    let changed = zip(previous.entries, plan).reduce(into: 0) {
+                        if $1.0.digest != $1.1.digest { $0 += 1 }
+                    }
+                    rewritten = changed
+                    built = try self.updateChangedBlocks(
+                        db, page: page, plan: plan, stamp: stamp,
+                        preambleDigest: preambleDigest, skeleton: previous)
+                    if built != nil {
+                        self.countIndex(incremental: true, blocksRewritten: rewritten)
+                        return
+                    }
+                }
+                built = try self.rebuildPage(
+                    db, page: page, plan: plan, stamp: stamp, preambleDigest: preambleDigest)
+                self.countIndex(incremental: false, blocksRewritten: plan.count)
+            }
+        } catch {
+            setSkeleton(nil, forPageKey: key)
+            throw error
+        }
+        setSkeleton(built, forPageKey: key)
+    }
+
+    /// Preorder walk — parent, then its subtree, then the next sibling — which is
+    /// the order `position` counts in.
+    private static func flatten(_ page: PageDocument) -> [FlatBlock] {
+        var flat: [FlatBlock] = []
+        func walk(_ blocks: [Block], parent: UUID?, depth: Int) {
+            for block in blocks {
+                flat.append(FlatBlock(
+                    id: block.id, parent: parent, depth: depth, content: block.content,
+                    todo: block.todoState?.rawValue, collapsed: block.collapsed,
+                    properties: block.properties,
+                    digest: digest(content: block.content, todo: block.todoState?.rawValue,
+                                   collapsed: block.collapsed, properties: block.properties)))
+                walk(block.children, parent: block.id, depth: depth + 1)
+            }
+        }
+        walk(page.blocks, parent: nil, depth: 0)
+        return flat
+    }
+
+    private static func digest(
+        content: String, todo: String?, collapsed: Bool, properties: [BlockProperty]
+    ) -> Data {
+        var hasher = SHA256()
+        hasher.update(data: Data(content.utf8))
+        hasher.update(data: Data([collapsed ? 1 : 0]))
+        hasher.update(data: Data((todo ?? "").utf8))
+        hasher.update(data: Data(propertyBytes(properties)))
+        return Data(hasher.finalize())
+    }
+
+    private static func digest(properties: [BlockProperty]) -> Data {
+        Data(SHA256.hash(data: Data(propertyBytes(properties))))
+    }
+
+    private static func propertyBytes(_ properties: [BlockProperty]) -> [UInt8] {
+        var bytes: [UInt8] = []
+        for property in properties {
+            bytes.append(contentsOf: Array(property.key.utf8))
+            bytes.append(0)
+            bytes.append(contentsOf: Array(property.value.utf8))
+            bytes.append(0)
+        }
+        return bytes
+    }
+
+    private func countIndex(incremental: Bool, blocksRewritten: Int) {
+        skeletonLock.lock()
+        if incremental { stats.incremental += 1 } else { stats.full += 1 }
+        stats.blocksRewritten += blocksRewritten
+        skeletonLock.unlock()
+    }
+
+    private func skeleton(forPageKey key: String) -> PageSkeleton? {
+        skeletonLock.lock()
+        defer { skeletonLock.unlock() }
+        return skeletons[key]
+    }
+
+    private func setSkeleton(_ skeleton: PageSkeleton?, forPageKey key: String) {
+        skeletonLock.lock()
+        defer { skeletonLock.unlock() }
+        guard let skeleton else {
+            skeletons[key] = nil
+            skeletonOrder.removeAll { $0 == key }
+            return
+        }
+        if skeletons.updateValue(skeleton, forKey: key) == nil {
+            skeletonOrder.append(key)
+            while skeletonOrder.count > skeletonLimit {
+                skeletons[skeletonOrder.removeFirst()] = nil
+            }
+        }
+    }
+
+    /// Rewrites only the blocks whose own content changed. Returns nil when the
+    /// page's row has gone missing, leaving the caller to rebuild in full — no
+    /// rows have been touched at that point.
+    private func updateChangedBlocks(
+        _ db: Database, page: PageDocument, plan: [FlatBlock], stamp: FileStamp?,
+        preambleDigest: Data, skeleton: PageSkeleton
+    ) throws -> PageSkeleton? {
+        let key = page.nameKey
+        let journalDate = JournalDate(pageName: page.name)
+        try db.execute(
+            sql: """
+                UPDATE pages SET display_name = ?, is_journal = ?, journal_date = ?,
+                                 file_exists = ?, file_mtime = ?, file_size = ?
+                WHERE name_key = ?
+                """,
+            arguments: [
+                page.name, page.isJournal, page.isJournal ? journalDate?.pageName : nil,
+                page.fileExists, stamp?.mtime, stamp?.size, key,
+            ])
+        guard db.changesCount == 1 else { return nil }
+
+        var updated = skeleton
+        let updateBlock = try db.cachedStatement(
+            sql: "UPDATE blocks SET content = ?, todo = ?, collapsed = ? WHERE id = ?")
+        let deleteFTS = try db.cachedStatement(sql: "DELETE FROM blocks_fts WHERE rowid = ?")
+        let statements = try FacetStatements(db)
+
+        for (index, flat) in plan.enumerated()
+        where flat.digest != skeleton.entries[index].digest {
+            let bid = flat.id.uuidString.lowercased()
+            try updateBlock.execute(arguments: [flat.content, flat.todo, flat.collapsed, bid])
+            try deleteFTS.execute(arguments: [skeleton.entries[index].ftsRowID])
+            try statements.insertFTS.execute(arguments: [flat.content, bid, key])
+            let ftsRowID = db.lastInsertedRowID
+            for statement in statements.facetDeletes {
+                try statement.execute(arguments: [bid])
+            }
+            try statements.insertFacets(for: flat, blockID: bid, pageKey: key, cache: self)
+            updated.entries[index].digest = flat.digest
+            updated.entries[index].ftsRowID = ftsRowID
+        }
+        if updated.preambleDigest != preambleDigest {
+            try db.execute(sql: "DELETE FROM page_props WHERE page_key = ?", arguments: [key])
+            try Self.insertPageProps(db, page: page, key: key)
+            updated.preambleDigest = preambleDigest
+        }
+        return updated
+    }
+
+    /// The prepared statements a block's facet rows need. `db.execute(sql:)`
+    /// recompiles its SQL on every call and a page indexes about five statements
+    /// per block, which dominated the reindex that follows a pause in typing.
+    private struct FacetStatements {
+        let insertFTS: Statement
+        let insertPageRef: Statement
+        let insertBlockRef: Statement
+        let insertTag: Statement
+        let insertProp: Statement
+        let facetDeletes: [Statement]
+
+        init(_ db: Database) throws {
+            insertFTS = try db.cachedStatement(
                 sql: "INSERT INTO blocks_fts (content, block_id, page_key) VALUES (?, ?, ?)")
-            let insertPageRef = try db.cachedStatement(sql: """
+            insertPageRef = try db.cachedStatement(sql: """
                 INSERT INTO page_refs (block_id, page_key, target_key, target_display)
                 VALUES (?, ?, ?, ?)
                 """)
-            let insertBlockRef = try db.cachedStatement(
+            insertBlockRef = try db.cachedStatement(
                 sql: "INSERT INTO block_refs (block_id, page_key, target_id) VALUES (?, ?, ?)")
-            let insertTag = try db.cachedStatement(
+            insertTag = try db.cachedStatement(
                 sql: "INSERT INTO tags (block_id, page_key, tag) VALUES (?, ?, ?)")
-            let insertProp = try db.cachedStatement(
+            insertProp = try db.cachedStatement(
                 sql: "INSERT INTO props (block_id, page_key, key, value) VALUES (?, ?, ?, ?)")
-
-            var position = 0
-            func walk(_ blocks: [Block], parent: UUID?, depth: Int) throws {
-                for block in blocks {
-                    var blockID = block.id
-                    var bid = blockID.uuidString.lowercased()
-                    func insertBlock(orIgnore: Bool) throws {
-                        try (orIgnore ? insertBlockOrIgnore : insertBlockPlain).execute(
-                            arguments: [
-                                bid, key, parent?.uuidString.lowercased(), position,
-                                depth, block.content, block.todoState?.rawValue,
-                                block.collapsed,
-                            ]
-                        )
-                    }
-                    try insertBlock(orIgnore: true)
-                    if db.changesCount == 0 {
-                        // Two files carry the same persisted `id::`. A bare INSERT
-                        // would hit the PRIMARY KEY constraint and abort the whole
-                        // sync, so the graph would fail to open. Re-mint a fresh
-                        // index id for this later copy: it stays searchable and
-                        // structurally intact, while a `((shared-id))` ref resolves
-                        // to the first-indexed block. (Caused by copy/pasting a
-                        // block's raw Markdown, duplicating a file, or Logseq import.)
-                        blockID = UUID()
-                        bid = blockID.uuidString.lowercased()
-                        try insertBlock(orIgnore: false)
-                    }
-                    position += 1
-                    try insertFTS.execute(arguments: [block.content, bid, key])
-                    let refs = cachedRefs(for: block.id, content: block.content)
-                    for target in refs.pageRefs {
-                        try insertPageRef.execute(
-                            arguments: [bid, key, PageName.key(target), target])
-                    }
-                    for target in refs.blockRefs {
-                        try insertBlockRef.execute(
-                            arguments: [bid, key, target.uuidString.lowercased()])
-                    }
-                    for tag in refs.tags {
-                        try insertTag.execute(arguments: [bid, key, tag])
-                    }
-                    for prop in block.properties {
-                        try insertProp.execute(arguments: [bid, key, prop.key, prop.value])
-                    }
-                    try walk(block.children, parent: blockID, depth: depth + 1)
-                }
-            }
-            try walk(page.blocks, parent: nil, depth: 0)
-            // Preamble page properties (un-bulleted `key:: value` lines, the
-            // Logseq convention) are page-scoped: stored on their own, not on any
-            // block. `{{query key:: value}}` matches them via the page's first
-            // block (see `compile`), surfacing the page without polluting block
-            // properties. The preamble text itself round-trips untouched.
-            for prop in page.preambleProperties {
-                try db.execute(
-                    sql: "INSERT INTO page_props (page_key, key, value) VALUES (?, ?, ?)",
-                    arguments: [key, prop.key, prop.value]
-                )
+            facetDeletes = try ["page_refs", "block_refs", "tags", "props"].map {
+                try db.cachedStatement(sql: "DELETE FROM \($0) WHERE block_id = ?")
             }
         }
+
+        func insertFacets(
+            for flat: FlatBlock, blockID: String, pageKey: String, cache: CacheDB
+        ) throws {
+            let refs = cache.cachedRefs(for: flat.id, content: flat.content)
+            for target in refs.pageRefs {
+                try insertPageRef.execute(
+                    arguments: [blockID, pageKey, PageName.key(target), target])
+            }
+            for target in refs.blockRefs {
+                try insertBlockRef.execute(
+                    arguments: [blockID, pageKey, target.uuidString.lowercased()])
+            }
+            for tag in refs.tags {
+                try insertTag.execute(arguments: [blockID, pageKey, tag])
+            }
+            for property in flat.properties {
+                try insertProp.execute(
+                    arguments: [blockID, pageKey, property.key, property.value])
+            }
+        }
+    }
+
+    /// Preamble page properties (un-bulleted `key:: value` lines, the Logseq
+    /// convention) are page-scoped: stored on their own, not on any block. A
+    /// `{{query key:: value}}` matches them via the page's first block (see
+    /// `compile`), surfacing the page without polluting block properties. The
+    /// preamble text itself round-trips untouched.
+    private static func insertPageProps(
+        _ db: Database, page: PageDocument, key: String
+    ) throws {
+        for property in page.preambleProperties {
+            try db.execute(
+                sql: "INSERT INTO page_props (page_key, key, value) VALUES (?, ?, ?)",
+                arguments: [key, property.key, property.value])
+        }
+    }
+
+    /// Deletes and reinserts every row for the page. Returns nil when a block id
+    /// collided and had to be re-minted, so the next index rebuilds rather than
+    /// trusting document ids to address rows.
+    private func rebuildPage(
+        _ db: Database, page: PageDocument, plan: [FlatBlock], stamp: FileStamp?,
+        preambleDigest: Data
+    ) throws -> PageSkeleton? {
+        let key = page.nameKey
+        try Self.deletePageRows(db, key: key)
+        let journalDate = JournalDate(pageName: page.name)
+        try db.execute(
+            sql: """
+                INSERT INTO pages
+                (name_key, display_name, is_journal, journal_date, file_exists, file_mtime, file_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                key, page.name, page.isJournal,
+                page.isJournal ? journalDate?.pageName : nil,
+                page.fileExists, stamp?.mtime, stamp?.size,
+            ])
+
+        let blockColumns = "(id, page_key, parent_id, position, depth, content, todo, collapsed)"
+        let blockValues = "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        let insertBlockOrIgnore = try db.cachedStatement(
+            sql: "INSERT OR IGNORE INTO blocks \(blockColumns) \(blockValues)")
+        let insertBlockPlain = try db.cachedStatement(
+            sql: "INSERT INTO blocks \(blockColumns) \(blockValues)")
+        let statements = try FacetStatements(db)
+
+        var entries: [SkeletonEntry] = []
+        var reminted = false
+        // A re-minted id replaces the document's own for this row *and* for its
+        // children's parent_id, so the tree still hangs together.
+        var rowIDs: [UUID: UUID] = [:]
+        for (position, flat) in plan.enumerated() {
+            var blockID = flat.id
+            var bid = blockID.uuidString.lowercased()
+            let parent = flat.parent.map { rowIDs[$0] ?? $0 }
+            func insertBlock(orIgnore: Bool) throws {
+                try (orIgnore ? insertBlockOrIgnore : insertBlockPlain).execute(
+                    arguments: [
+                        bid, key, parent?.uuidString.lowercased(), position,
+                        flat.depth, flat.content, flat.todo, flat.collapsed,
+                    ])
+            }
+            try insertBlock(orIgnore: true)
+            if db.changesCount == 0 {
+                // Two files carry the same persisted `id::`. A bare INSERT would
+                // hit the PRIMARY KEY constraint and abort the whole sync, so the
+                // graph would fail to open. Re-mint a fresh index id for this
+                // later copy: it stays searchable and structurally intact, while a
+                // `((shared-id))` ref resolves to the first-indexed block. (Caused
+                // by copy/pasting a block's raw Markdown, duplicating a file, or a
+                // Logseq import.)
+                blockID = UUID()
+                bid = blockID.uuidString.lowercased()
+                rowIDs[flat.id] = blockID
+                reminted = true
+                try insertBlock(orIgnore: false)
+            }
+            try statements.insertFTS.execute(arguments: [flat.content, bid, key])
+            entries.append(SkeletonEntry(
+                id: flat.id, parent: flat.parent, depth: flat.depth,
+                digest: flat.digest, ftsRowID: db.lastInsertedRowID))
+            try statements.insertFacets(for: flat, blockID: bid, pageKey: key, cache: self)
+        }
+        try Self.insertPageProps(db, page: page, key: key)
+        guard !reminted else { return nil }
+        return PageSkeleton(entries: entries, preambleDigest: preambleDigest)
     }
 
     private func cachedRefs(for id: UUID, content: String) -> ExtractedRefs {
