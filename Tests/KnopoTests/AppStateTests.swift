@@ -10,7 +10,7 @@ import KnopoCore
             .appendingPathComponent("knopo-async-save-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try GraphStore(root: root)
-        let app = AppState(store: store)
+        let app = AppState(store: store, saveDebounce: 0.05, saveCeiling: 0.2)
         defer { app.shutdown() }
 
         var doc = try store.createPage(named: "Notes")
@@ -20,7 +20,7 @@ import KnopoCore
         // Let the debounce enqueue the first snapshot, then supersede it. The
         // explicit flush must wait behind that write and leave disk/index on the
         // newest revision.
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         doc.blocks[0].content = "latest snapshot marker"
         app.commit(doc)
         app.flushPendingSaves()
@@ -47,14 +47,14 @@ import KnopoCore
         store.updatePage(doc)
         try store.savePage(named: "Notes")
 
-        let app = AppState(store: store)
+        let app = AppState(store: store, saveDebounce: 0.05, saveCeiling: 0.2)
         defer { app.shutdown() }
         try await Task.sleep(nanoseconds: 300_000_000)
 
         // Let one debounced save land, then supersede it and flush the newer one.
         doc.blocks[0].content = "first"
         app.commit(doc)
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         doc.blocks[0].content = "second"
         app.commit(doc)
         app.flushPendingSaves()

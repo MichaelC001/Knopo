@@ -358,6 +358,13 @@ Knopo watches the graph for external file edits and refreshes its index. If an
 external edit conflicts with unsaved in-app changes, the last writer wins and
 the losing version is saved under `.knopo/conflicts/`.
 
+Your typing is written to disk a couple of seconds after you stop, and at least
+every ten seconds while you keep going — plus immediately when you quit Knopo or
+switch to another app. So the file on disk trails what is on screen by seconds,
+never by more, and edits with no net change do not touch the file at all. That
+matters if your graph lives in versioned cloud storage or on a share: Knopo tries
+not to produce a new version of a page for every keystroke.
+
 The SQLite index at `.knopo/cache.db` is rebuildable — if you ever delete it,
 remove its `cache.db-wal` and `cache.db-shm` companions too, and Knopo rebuilds
 the index from your Markdown on the next launch. Page and journal Markdown files

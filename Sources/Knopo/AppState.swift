@@ -33,6 +33,9 @@ final class AppState: ObservableObject {
     private let pageSaveQueue = DispatchQueue(
         label: "io.knopo.page-save", qos: .utility)
     private var pendingSaves: [String: DispatchWorkItem] = [:]
+    private var pendingCeilings: [String: DispatchWorkItem] = [:]
+    let saveDebounce: TimeInterval
+    let saveCeiling: TimeInterval
     private var dirtySaveNames: [String: String] = [:]
     private var saveGenerations: [String: UInt64] = [:]
     private var internallySavedStamps: [String: CacheDB.FileStamp] = [:]
@@ -67,8 +70,16 @@ final class AppState: ObservableObject {
     /// harmless, since closing a session with no open session does nothing.
     var closePendingEdit: (() -> Void)?
 
-    init(store: GraphStore) {
+    /// Quiet period after the last keystroke before a page is written, and the
+    /// longest a page may stay unwritten while editing continues (SPEC §9.3).
+    /// The debounce alone has no ceiling — each keystroke pushes it back — so
+    /// steady typing could defer a save indefinitely; and typing just slower than
+    /// the debounce used to write and reindex the page on *every* character.
+    /// Overridable so tests don't have to sleep for seconds.
+    init(store: GraphStore, saveDebounce: TimeInterval = 2, saveCeiling: TimeInterval = 10) {
         self.store = store
+        self.saveDebounce = saveDebounce
+        self.saveCeiling = saveCeiling
         allPagesCollapsedSections = Set(store.config.allPagesCollapsedSections)
         store.onExternalChange = { [weak self] _ in
             self?.dataVersion += 1
@@ -181,8 +192,9 @@ final class AppState: ObservableObject {
         store.page(named: name)
     }
 
-    /// Commits an edited document: updates memory, schedules a debounced save
-    /// (~300 ms, SPEC §9.3), and records undo state.
+    /// Commits an edited document: updates memory, schedules the save
+    /// (`saveDebounce`, bounded by `saveCeiling` — SPEC §9.3), and records undo
+    /// state.
     func commit(_ doc: PageDocument, undoLabel: String? = nil) {
         if let undoLabel {
             let before = store.page(named: doc.name)
@@ -231,20 +243,39 @@ final class AppState: ObservableObject {
         return true
     }
 
+
     private func scheduleSave(_ name: String) {
         let key = PageName.key(name)
-        let generation = saveGenerations[key, default: 0] &+ 1
-        saveGenerations[key] = generation
+        saveGenerations[key] = saveGenerations[key, default: 0] &+ 1
         dirtySaveNames[key] = name
         pendingSaves[key]?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard self.saveGenerations[key] == generation else { return }
-            self.pendingSaves[key] = nil
-            self.enqueuePageSave(named: name, key: key, generation: generation)
+        let debounced = DispatchWorkItem { [weak self] in
+            self?.performScheduledSave(key: key)
         }
-        pendingSaves[key] = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        pendingSaves[key] = debounced
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + saveDebounce, execute: debounced)
+        // Scheduled once per dirty run and never pushed back, so the wait is
+        // bounded no matter how long typing continues.
+        guard pendingCeilings[key] == nil else { return }
+        let ceiling = DispatchWorkItem { [weak self] in
+            self?.performScheduledSave(key: key)
+        }
+        pendingCeilings[key] = ceiling
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + saveCeiling, execute: ceiling)
+    }
+
+    /// Whichever of the two timers fires first saves the page's current state and
+    /// stands the other down.
+    private func performScheduledSave(key: String) {
+        pendingSaves[key]?.cancel()
+        pendingSaves[key] = nil
+        pendingCeilings[key]?.cancel()
+        pendingCeilings[key] = nil
+        guard let name = dirtySaveNames[key] else { return }
+        enqueuePageSave(
+            named: name, key: key, generation: saveGenerations[key, default: 0])
     }
 
     private func enqueuePageSave(named name: String, key: String, generation: UInt64) {
@@ -299,6 +330,8 @@ final class AppState: ObservableObject {
         for key in keys {
             pendingSaves[key]?.cancel()
             pendingSaves[key] = nil
+            pendingCeilings[key]?.cancel()
+            pendingCeilings[key] = nil
         }
         let jobs = keys.compactMap { key -> (
             key: String, generation: UInt64, snapshot: GraphStore.PageSaveSnapshot

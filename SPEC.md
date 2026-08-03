@@ -397,7 +397,9 @@ Every page (including journal pages and stubs) shows below its content:
 
 ### 9.3 Index requirements
 
-The reference index updates incrementally on every block commit (debounced ~300 ms) and on external file changes. Backlink lookup for a page must be O(incoming refs), not a graph scan — this is the primary job of `cache.db`.
+A page is written **2 s after the last keystroke**, and in any case no more than **10 s after the first unsaved edit** — the debounce alone is pushed back by every keystroke, so steady typing would otherwise defer the write indefinitely, while typing just slower than the debounce would write on every single character. Quitting or switching away from the app writes immediately, as do navigation, undo/redo and renames, so the wait is only ever the price of a crash. A save whose text matches what is already on disk writes nothing at all.
+
+The reference index updates with the page (same cadence) and on external file changes. When a page keeps the same blocks in the same order, only the blocks whose text changed are rewritten; anything structural rebuilds the page's rows. Backlink lookup for a page must be O(incoming refs), not a graph scan — this is the primary job of `cache.db`.
 
 ---
 
