@@ -11,6 +11,25 @@ final class GraphManager: ObservableObject {
 
     private static let lastGraphKey = "lastGraphPath"
 
+    init() {
+        // Saves are debounced (§9.3), so quitting or switching away with a save
+        // still pending would drop it: nothing else persists on the way out.
+        // `flushPendingSaves` waits behind any write already on its queue.
+        for name in [NSApplication.willTerminateNotification,
+                     NSApplication.didResignActiveNotification] {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.flushAll() }
+            }
+        }
+    }
+
+    /// Persists every open graph's pending edits now.
+    func flushAll() {
+        for app in apps.values { app.flushPendingSaves() }
+    }
+
     /// The shared `AppState` for a graph root, opening + seeding it on first use.
     /// Kept for the process lifetime (a handful of graphs); reopening one is
     /// instant and a still-open window keeps it alive regardless.
