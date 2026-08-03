@@ -270,12 +270,16 @@ final class AppState: ObservableObject {
         result: Result<CacheDB.FileStamp?, Error>
     ) {
         guard case .success(let stamp) = result else { return }
+        // Record the stamp even when a newer edit superseded this snapshot: the
+        // write still happened, and its FSEvent is still ours. Skipping it here
+        // made every superseded save — common while typing — look external and
+        // pay for a whole-graph scan that finds nothing.
+        recordInternalSave(of: snapshot.document, stamp: stamp)
         let isCurrent = store.finishPageSave(snapshot)
         guard dirtySaveNames[key] != nil,
               saveGenerations[key] == generation,
               isCurrent else { return }
         dirtySaveNames[key] = nil
-        recordInternalSave(of: snapshot.document, stamp: stamp)
         dataVersion += 1
     }
 
@@ -315,12 +319,12 @@ final class AppState: ObservableObject {
         var changed = false
         for (job, result) in results {
             guard case .success(let stamp) = result else { continue }
+            recordInternalSave(of: job.snapshot.document, stamp: stamp)
             let isCurrent = store.finishPageSave(job.snapshot)
             guard dirtySaveNames[job.key] != nil,
                   saveGenerations[job.key] == job.generation,
                   isCurrent else { continue }
             dirtySaveNames[job.key] = nil
-            recordInternalSave(of: job.snapshot.document, stamp: stamp)
             changed = true
         }
         if changed { dataVersion += 1 }

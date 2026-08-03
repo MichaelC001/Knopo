@@ -32,6 +32,45 @@ import KnopoCore
         #expect(try store.cache.searchBlocks("latest snapshot marker", limit: 10).count == 1)
     }
 
+    /// A save that a newer edit superseded still wrote a file, and its stamp is
+    /// recorded so the resulting FSEvent isn't mistaken for someone else's edit.
+    /// The risk in recording more stamps is over-suppression, so what this pins
+    /// down is that a real external edit right afterwards is still noticed.
+    @MainActor
+    @Test func externalEditIsStillSeenAfterASupersededSave() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-superseded-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks[0].content = "original"
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Let one debounced save land, then supersede it and flush the newer one.
+        doc.blocks[0].content = "first"
+        app.commit(doc)
+        try await Task.sleep(nanoseconds: 350_000_000)
+        doc.blocks[0].content = "second"
+        app.commit(doc)
+        app.flushPendingSaves()
+        let before = app.dataVersion
+
+        let url = store.fileURL(forPageNamed: "Notes")
+        try Data("- changed by someone else\n".utf8).write(to: url, options: .atomic)
+
+        let deadline = Date().addingTimeInterval(2)
+        while app.dataVersion == before && Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(app.dataVersion > before)
+        #expect(app.document(for: "Notes").blocks[0].content == "changed by someone else")
+    }
+
     @MainActor
     @Test func watcherReloadsAnExternalMarkdownEdit() async throws {
         let root = FileManager.default.temporaryDirectory
