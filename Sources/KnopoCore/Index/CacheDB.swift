@@ -731,6 +731,33 @@ public final class CacheDB: @unchecked Sendable {
     }
 
     /// Journal pages, most recent day first.
+    /// What makes a journal day count as having something in it: a block with
+    /// actual text. Deliberately *not* `PageDocument.isEffectivelyEmpty`, which
+    /// also counts a blank block carrying properties — for persistence, keeping a
+    /// block that owns an `id::` matters; for the feed, a day holding one blank
+    /// bullet is a day with nothing to read.
+    private static let hasContentBlock = """
+        EXISTS (
+            SELECT 1 FROM blocks b WHERE b.page_key = p.name_key
+              AND TRIM(b.content, ' ' || char(9) || char(10) || char(13)) <> ''
+        )
+        """
+
+    /// Journal day keys that have something in them, newest first — what the
+    /// journal home lists below today (SPEC §10). A day whose text you delete
+    /// leaves a file holding one blank block; counting blocks rather than content
+    /// kept such a day in the feed for good, showing the empty-page hint on it.
+    public func journalDaysWithContent() throws -> [String] {
+        try dbQueue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT p.name_key FROM pages p
+                WHERE p.is_journal = 1 AND p.journal_date IS NOT NULL
+                  AND \(Self.hasContentBlock)
+                ORDER BY p.journal_date DESC
+                """)
+        }
+    }
+
     public func journalPages() throws -> [PageListing] {
         try dbQueue.read { db in
             try Row.fetchAll(db, sql: """
@@ -752,11 +779,11 @@ public final class CacheDB: @unchecked Sendable {
     public func journalDaySignature() throws -> String {
         try dbQueue.read { db in
             try String.fetchOne(db, sql: """
-                SELECT GROUP_CONCAT(page_key) FROM (
-                    SELECT DISTINCT b.page_key AS page_key
-                    FROM blocks b JOIN pages p ON p.name_key = b.page_key
+                SELECT GROUP_CONCAT(name_key) FROM (
+                    SELECT p.name_key AS name_key FROM pages p
                     WHERE p.is_journal = 1 AND p.journal_date IS NOT NULL
-                    ORDER BY b.page_key
+                      AND \(Self.hasContentBlock)
+                    ORDER BY p.name_key
                 )
                 """) ?? ""
         }

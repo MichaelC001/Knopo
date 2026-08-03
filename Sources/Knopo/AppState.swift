@@ -561,9 +561,9 @@ final class AppState: ObservableObject {
             journalDaySignature = signature
             journalCacheToday = today
             var names = [today]
-            let existing = (try? store.cache.journalPages()) ?? []
-            for page in existing where page.nameKey != today && page.blockCount > 0 {
-                names.append(page.nameKey)
+            let existing = (try? store.cache.journalDaysWithContent()) ?? []
+            for key in existing where key != today {
+                names.append(key)
             }
             journalDayCache = names
         }
