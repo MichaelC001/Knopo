@@ -65,6 +65,11 @@ public final class CacheDB: @unchecked Sendable {
         let parent: UUID?
         let depth: Int
         var digest: Data
+        /// Covers only what the ref/tag/property rows are built from. Ordinary
+        /// typing changes a block's text without touching any of them, and those
+        /// rows are the expensive part: each carries several index b-trees, so
+        /// rewriting them dirties three times the pages the text itself does.
+        var facetDigest: Data
         var ftsRowID: Int64
     }
 
@@ -366,6 +371,17 @@ public final class CacheDB: @unchecked Sendable {
         return Data(hasher.finalize())
     }
 
+    private static func facetDigest(
+        refs: ExtractedRefs, properties: [BlockProperty]
+    ) -> Data {
+        var hasher = SHA256()
+        for target in refs.pageRefs { hasher.update(data: Data(target.utf8)); hasher.update(data: Data([0])) }
+        for target in refs.blockRefs { hasher.update(data: Data(target.uuidString.utf8)) }
+        for tag in refs.tags { hasher.update(data: Data(tag.utf8)); hasher.update(data: Data([0])) }
+        hasher.update(data: Data(propertyBytes(properties)))
+        return Data(hasher.finalize())
+    }
+
     private static func digest(properties: [BlockProperty]) -> Data {
         Data(SHA256.hash(data: Data(propertyBytes(properties))))
     }
@@ -444,10 +460,16 @@ public final class CacheDB: @unchecked Sendable {
             try deleteFTS.execute(arguments: [skeleton.entries[index].ftsRowID])
             try statements.insertFTS.execute(arguments: [flat.content, bid, key])
             let ftsRowID = db.lastInsertedRowID
-            for statement in statements.facetDeletes {
-                try statement.execute(arguments: [bid])
+            let refs = cachedRefs(for: flat.id, content: flat.content)
+            let facets = Self.facetDigest(refs: refs, properties: flat.properties)
+            if facets != skeleton.entries[index].facetDigest {
+                for statement in statements.facetDeletes {
+                    try statement.execute(arguments: [bid])
+                }
+                try statements.insertFacets(
+                    refs: refs, properties: flat.properties, blockID: bid, pageKey: key)
+                updated.entries[index].facetDigest = facets
             }
-            try statements.insertFacets(for: flat, blockID: bid, pageKey: key, cache: self)
             updated.entries[index].digest = flat.digest
             updated.entries[index].ftsRowID = ftsRowID
         }
@@ -489,9 +511,9 @@ public final class CacheDB: @unchecked Sendable {
         }
 
         func insertFacets(
-            for flat: FlatBlock, blockID: String, pageKey: String, cache: CacheDB
+            refs: ExtractedRefs, properties: [BlockProperty],
+            blockID: String, pageKey: String
         ) throws {
-            let refs = cache.cachedRefs(for: flat.id, content: flat.content)
             for target in refs.pageRefs {
                 try insertPageRef.execute(
                     arguments: [blockID, pageKey, PageName.key(target), target])
@@ -503,7 +525,7 @@ public final class CacheDB: @unchecked Sendable {
             for tag in refs.tags {
                 try insertTag.execute(arguments: [blockID, pageKey, tag])
             }
-            for property in flat.properties {
+            for property in properties {
                 try insertProp.execute(
                     arguments: [blockID, pageKey, property.key, property.value])
             }
@@ -587,10 +609,14 @@ public final class CacheDB: @unchecked Sendable {
                 try insertBlock(orIgnore: false)
             }
             try statements.insertFTS.execute(arguments: [flat.content, bid, key])
+            let refs = cachedRefs(for: flat.id, content: flat.content)
             entries.append(SkeletonEntry(
                 id: flat.id, parent: flat.parent, depth: flat.depth,
-                digest: flat.digest, ftsRowID: db.lastInsertedRowID))
-            try statements.insertFacets(for: flat, blockID: bid, pageKey: key, cache: self)
+                digest: flat.digest,
+                facetDigest: Self.facetDigest(refs: refs, properties: flat.properties),
+                ftsRowID: db.lastInsertedRowID))
+            try statements.insertFacets(
+                refs: refs, properties: flat.properties, blockID: bid, pageKey: key)
         }
         try Self.insertPageProps(db, page: page, key: key)
         guard !reminted else { return nil }

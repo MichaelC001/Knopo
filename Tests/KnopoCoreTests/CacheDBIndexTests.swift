@@ -181,4 +181,28 @@ import Foundation
         expectTrue(try cache.backlinks(of: PageName.key("A")).isEmpty)
         expectEqual(try cache.backlinks(of: PageName.key("B")).count, 1)
     }
+
+    /// Editing a block's prose leaves its refs, tags and properties alone, and
+    /// those rows carry several index b-trees each — so they are skipped. The
+    /// risk is a digest that misses an input and leaves them stale, so: text
+    /// changes and searches follow it, while the untouched refs still resolve.
+    @Test func aProseEditKeepsFacetRowsAndStillUpdatesSearch() throws {
+        let cache = try CacheDB()
+        let id = UUID()
+        try cache.indexPage(page("Notes", blocks: [
+            block("draft one refs [[Steady]] #steady", id: id),
+        ]), stamp: nil)
+
+        try cache.indexPage(page("Notes", blocks: [
+            block("draft two refs [[Steady]] #steady", id: id),
+        ]), stamp: nil)
+
+        expectEqual(cache.indexStats.incremental, 1)
+        // Facets untouched but still exactly one of each — not dropped, not doubled.
+        expectEqual(try cache.backlinks(of: PageName.key("Steady")).count, 1)
+        expectEqual(try cache.blocks(taggedWith: "steady").count, 1)
+        // …and the text really did change.
+        expectEqual(try cache.searchBlocks("two", limit: 5).count, 1)
+        expectTrue(try cache.searchBlocks("one", limit: 5).isEmpty)
+    }
 }
