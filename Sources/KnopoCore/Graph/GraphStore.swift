@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum GraphError: LocalizedError {
@@ -31,6 +32,13 @@ public final class GraphStore {
     public final class PagePersistence: @unchecked Sendable {
         private let root: URL
         private let cache: CacheDB
+        /// Digest of the text last written for each page key, so a save that
+        /// serializes to what is already on disk writes nothing. Typing a
+        /// character and deleting it again, or any save with no net change,
+        /// would otherwise rewrite the whole file and reindex the whole page —
+        /// and each rewrite is a new version for file-versioning cloud storage.
+        private let writtenLock = NSLock()
+        private var writtenDigests: [String: SHA256Digest] = [:]
 
         fileprivate init(root: URL, cache: CacheDB) {
             self.root = root
@@ -46,12 +54,34 @@ public final class GraphStore {
             let directory = doc.isJournal ? "journals" : "pages"
             let url = root.appendingPathComponent(directory, isDirectory: true)
                 .appendingPathComponent(PageName.fileName(for: doc.name))
-            try Data(text.utf8).write(to: url, options: .atomic)
+            let data = Data(text.utf8)
+            let digest = SHA256.hash(data: data)
+
+            writtenLock.lock()
+            let unchanged = writtenDigests[doc.nameKey] == digest
+            writtenLock.unlock()
+            // Only trust the digest while the file it describes is still there:
+            // a page deleted or restored behind our back must be rewritten.
+            if unchanged, let stamp = GraphStore.stamp(of: url) { return stamp }
+
+            try data.write(to: url, options: .atomic)
+            writtenLock.lock()
+            writtenDigests[doc.nameKey] = digest
+            writtenLock.unlock()
+
             doc.fileExists = true
             doc.isDirty = false
             let stamp = GraphStore.stamp(of: url)
             try cache.indexPage(doc, stamp: stamp)
             return stamp
+        }
+
+        /// Forgets a page's digest — after a rename or delete, where the next
+        /// write targets a different file (or the same name means something new).
+        func forget(pageKey: String) {
+            writtenLock.lock()
+            writtenDigests[pageKey] = nil
+            writtenLock.unlock()
         }
     }
 
@@ -289,6 +319,7 @@ public final class GraphStore {
         }
         loaded.removeValue(forKey: key)
         loadedRevisions.removeValue(forKey: key)
+        pagePersistence.forget(pageKey: key)
         try cache.removePage(key: key)
         config.removeFavourite(name)
         try saveConfig()
@@ -379,6 +410,7 @@ public final class GraphStore {
         let oldURL = fileURL(forPageNamed: doc.name)
         let renamedRevision = loadedRevisions.removeValue(forKey: oldKey) ?? 0
         loaded.removeValue(forKey: oldKey)
+        pagePersistence.forget(pageKey: oldKey)
         doc.name = newName
         doc.isJournal = JournalDate(pageName: newName) != nil
         loaded[newKey] = doc
@@ -476,6 +508,8 @@ public final class GraphStore {
             let doc = Self.read(url: url, name: name, isJournal: isJournal)
             loaded[key] = doc
             loadedRevisions[key, default: 0] &+= 1
+            // The file changed outside the app: whatever we last wrote is moot.
+            pagePersistence.forget(pageKey: key)
             try cache.indexPage(doc, stamp: stamp)
             affected.insert(key)
         }

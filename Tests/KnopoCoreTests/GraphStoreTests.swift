@@ -3,6 +3,38 @@ import Foundation
 @testable import KnopoCore
 
 @Suite struct GraphStoreTests {
+    /// A save whose serialized text matches what is already on disk must not
+    /// rewrite the file: every rewrite is a fresh version on file-versioning
+    /// cloud storage, and a whole-page reindex besides.
+    @Test func savingUnchangedContentDoesNotRewriteTheFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-noop-write-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks[0].content = "settled"
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+        let url = store.fileURL(forPageNamed: "Notes")
+        let firstWrite = try #require(GraphStore.stamp(of: url))
+
+        // A save with no net change (typed and undone, say): same text, so the
+        // file must be left exactly as it was.
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+        expectEqual(GraphStore.stamp(of: url), firstWrite)
+
+        // A real change still writes.
+        // Different *length* too, so the comparison cannot pass on mtime alone.
+        doc.blocks[0].content = "changed, and rather longer than before"
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+        expectTrue(GraphStore.stamp(of: url) != firstWrite)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        expectTrue(text.contains("rather longer"))
+    }
+
     @Test func staleSaveSnapshotDoesNotMarkNewerEditsClean() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-stale-save-\(UUID().uuidString)")
