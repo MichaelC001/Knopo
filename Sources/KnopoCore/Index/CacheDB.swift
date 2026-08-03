@@ -46,9 +46,15 @@ public struct PageListing: Equatable, Sendable {
 /// file loses nothing but recents.
 public final class CacheDB: @unchecked Sendable {
     private let dbQueue: AnyDatabaseWriter
+    /// Extracted refs per block, so a page reindex only re-parses blocks whose
+    /// text changed. Keyed by **block id**, not content: while you type, the
+    /// edited block's content is different on every save, so content keys grew a
+    /// fresh entry per keystroke and the FIFO eviction threw out the stable
+    /// blocks the cache exists for. Keyed by id, a re-typed block replaces its
+    /// own entry and the working set stays the page.
     private let refCacheLock = NSLock()
-    private var refCache: [String: ExtractedRefs] = [:]
-    private var refCacheOrder: [String] = []
+    private var refCache: [UUID: (content: String, refs: ExtractedRefs)] = [:]
+    private var refCacheOrder: [UUID] = []
     private let refCacheLimit = 10_000
 
     /// Bumped whenever the *indexing logic* changes (not the schema) so an
@@ -265,7 +271,7 @@ public final class CacheDB: @unchecked Sendable {
                     }
                     position += 1
                     try insertFTS.execute(arguments: [block.content, bid, key])
-                    let refs = cachedRefs(for: block.content)
+                    let refs = cachedRefs(for: block.id, content: block.content)
                     for target in refs.pageRefs {
                         try insertPageRef.execute(
                             arguments: [bid, key, PageName.key(target), target])
@@ -298,20 +304,21 @@ public final class CacheDB: @unchecked Sendable {
         }
     }
 
-    private func cachedRefs(for content: String) -> ExtractedRefs {
+    private func cachedRefs(for id: UUID, content: String) -> ExtractedRefs {
         refCacheLock.lock()
-        if let cached = refCache[content] {
+        if let cached = refCache[id], cached.content == content {
             refCacheLock.unlock()
-            return cached
+            return cached.refs
         }
         refCacheLock.unlock()
 
         let refs = RefExtractor.extract(from: content)
 
         refCacheLock.lock()
-        if refCache[content] == nil {
-            refCache[content] = refs
-            refCacheOrder.append(content)
+        // A block already in the cache keeps its place in the eviction order —
+        // only its value is replaced, so editing one block can't push the rest out.
+        if refCache.updateValue((content, refs), forKey: id) == nil {
+            refCacheOrder.append(id)
             if refCacheOrder.count > refCacheLimit {
                 let overflow = refCacheOrder.count - refCacheLimit
                 for key in refCacheOrder.prefix(overflow) {
