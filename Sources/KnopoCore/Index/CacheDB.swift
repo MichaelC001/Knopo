@@ -81,20 +81,41 @@ public final class CacheDB: @unchecked Sendable {
         }
     }
 
-    public init(url: URL) throws {
+    /// Whether this cache opened as a WAL pool. False means the single-connection
+    /// fallback, where a read waits behind a running write.
+    public let usesWAL: Bool
+
+    /// - Parameter allowWAL: pass false to force the single-connection fallback
+    ///   (what a filesystem without shared memory gets); for tests.
+    public init(url: URL, allowWAL: Bool = true) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        // A pool lets UI reads continue against the last committed snapshot
-        // while a debounced page reindex runs on the background writer.
-        dbQueue = AnyDatabaseWriter(try DatabasePool(path: url.path))
+        // A pool lets UI reads continue against the last committed snapshot while
+        // a debounced page reindex runs on the background writer.
+        //
+        // A pool means WAL, and WAL needs a shared-memory file every connection
+        // can mmap — which a network filesystem (SMB, NFS) does not provide.
+        // GRDB checks and throws rather than degrading, so fall back to one
+        // serialized connection: reads then wait behind a write, which is slower
+        // but correct, and beats refusing to open the graph at all.
+        var pool: DatabasePool?
+        if allowWAL { pool = try? DatabasePool(path: url.path) }
+        if let pool {
+            dbQueue = AnyDatabaseWriter(pool)
+            usesWAL = true
+        } else {
+            dbQueue = AnyDatabaseWriter(try DatabaseQueue(path: url.path))
+            usesWAL = false
+        }
         try migrate()
     }
 
     /// In-memory database, for tests.
     public init() throws {
         dbQueue = AnyDatabaseWriter(try DatabaseQueue())
+        usesWAL = false
         try migrate()
     }
 

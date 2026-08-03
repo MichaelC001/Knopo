@@ -358,6 +358,13 @@ Knopo watches the graph for external file edits and refreshes its index. If an
 external edit conflicts with unsaved in-app changes, the last writer wins and
 the losing version is saved under `.knopo/conflicts/`.
 
-The SQLite index at `.knopo/cache.db` is rebuildable. Page and journal Markdown
-files are the source of note content; `.knopo/config.json` stores favourites and
+The SQLite index at `.knopo/cache.db` is rebuildable — if you ever delete it,
+remove its `cache.db-wal` and `cache.db-shm` companions too, and Knopo rebuilds
+the index from your Markdown on the next launch. Page and journal Markdown files
+are the source of note content; `.knopo/config.json` stores favourites and
 settings and should be backed up with the graph.
+
+A graph kept on a network share (SMB, NFS) works, but the index runs in a slower
+single-connection mode there, because those filesystems lack the shared memory
+SQLite needs for its faster concurrent mode. Your notes are unaffected either
+way; for the best experience keep the graph on a local disk.

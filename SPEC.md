@@ -110,11 +110,13 @@ There is no tag entity to open as a document, no tag content, no tag properties.
   .knopo/
     config.json                   // favourites, settings
     cache.db                      // rebuildable index (SQLite); safe to delete
+    cache.db-wal, cache.db-shm    // SQLite WAL companions to the above
 ```
 
 - One page = one file. Filename = page display name with filesystem-unsafe characters percent-encoded.
 - Relative image sources (`![alt](src)`) resolve against `assets/`. Knopo *emits* the `../assets/<file>` form — relative to the page file, which is how Logseq, GitHub, and Obsidian resolve it — so pages stay portable; both forms are read. Imported filenames replace spaces with `_` (CommonMark forbids spaces in a link destination); name collisions use readable `-1`, `-2`, … suffixes; deleting a block does not delete its asset (there is no asset garbage collection in v1).
-- `cache.db` holds the block/reference/tag index and recent-pages list. It is a **cache**: deleting it loses nothing except recents; the app rebuilds it from the Markdown files on next start.
+- `cache.db` holds the block/reference/tag index and recent-pages list. It is a **cache**: deleting it loses nothing except recents; the app rebuilds it from the Markdown files on next start — delete its `-wal`/`-shm` companions along with it.
+- The index is opened in **WAL** mode, so a reference lookup or search never waits for the debounced reindex of the page you are typing in. WAL needs a shared-memory file that network filesystems (SMB, NFS) do not provide; on one, the index falls back to a single serialized connection, where a read can wait out a running write. Graphs stay openable either way, and note files are unaffected — they are written directly, not through SQLite.
 - `config.json` holds favourites and user settings. It is authoritative (not rebuildable) and should be committed/backed up along with pages.
 
 ### 4.2 File format
