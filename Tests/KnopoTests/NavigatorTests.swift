@@ -5,28 +5,40 @@ import KnopoCore
 
 @Suite struct NavigatorTests {
 
-    /// `⌘J` is "take me to the journal"; pressed again on the feed it means "take
-    /// me to today to write", so it opens today's own page rather than doing
-    /// nothing (navigating to the target you're already on is a no-op).
+    /// `⌘J` is "take me to the journal" — every press, not a toggle. It used to
+    /// open today's own page when the feed was already showing, so holding it down
+    /// cycled between two views. Pressed on the feed it now asks for the caret in
+    /// today and leaves the view where it is.
     @MainActor
-    @Test func journalShortcutSecondPressOpensTodaysPage() throws {
+    @Test func journalShortcutAlwaysLandsOnTheFeed() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-nav-journal-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let app = AppState(store: try GraphStore(root: root))
         defer { app.shutdown() }
         let nav = Navigator(app: app)
+        let today = JournalDate.today().pageName
 
         // Somewhere else → the feed.
         nav.navigate(to: .allPages)
         nav.goToJournal()
         #expect(nav.current == .journalHome)
+        #expect(nav.focusWritingIn == nil)   // it opens ready to write on its own
 
-        // Already on the feed → today's page.
+        // Already on the feed → stay, and ask for the caret in today.
         nav.goToJournal()
-        #expect(nav.current == .page(name: JournalDate.today().pageName))
+        #expect(nav.current == .journalHome)
+        #expect(nav.focusWritingIn == today)
 
-        // And from today's page, back to the feed.
+        // Pressing it repeatedly never navigates away.
+        nav.focusWritingIn = nil             // as the outline does on consuming it
+        nav.goToJournal()
+        nav.goToJournal()
+        #expect(nav.current == .journalHome)
+        #expect(nav.focusWritingIn == today)
+
+        // From today's own page it still takes you to the journal.
+        nav.navigate(to: .page(name: today))
         nav.goToJournal()
         #expect(nav.current == .journalHome)
     }

@@ -19,6 +19,10 @@ final class Navigator: ObservableObject {
     /// right after creating a page so you can start typing immediately. The
     /// editor consumes (clears) it when it matches the page it just loaded.
     @Published var focusFirstBlock: String?
+    /// Page whose writing block should take the caret now, at the user's explicit
+    /// request (`⌘J`) — so it may take focus from another day in the feed, which
+    /// the automatic version deliberately never does.
+    @Published var focusWritingIn: String?
 
     /// The block an outline should scroll to and flash after it loads (set by
     /// clicking a query / backlink / tag result). The token bumps on each
@@ -79,9 +83,14 @@ final class Navigator: ObservableObject {
     /// plus previous days). Pressing it again, with the feed already showing, opens
     /// **today's own page** — the feed is for reading back, and a second press means
     /// "take me to today to write", where the caret lands ready to type (§5.4, §10).
+    /// `⌘J` means "take me to the journal", every time. It used to open today's
+    /// own page when the feed was already showing, which made repeated presses
+    /// cycle between two views. Pressing it on the feed now puts the caret in
+    /// today instead — still "take me to today to write", without navigating
+    /// somewhere else to do it.
     func goToJournal() {
         if current == .journalHome {
-            navigate(to: .page(name: JournalDate.today().pageName))
+            focusWritingIn = JournalDate.today().pageName
         } else {
             navigate(to: .journalHome)
         }

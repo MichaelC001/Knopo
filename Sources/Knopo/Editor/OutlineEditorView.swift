@@ -466,6 +466,16 @@ final class OutlineEditorController: NSObject {
                 }
             }
         }
+        // `⌘J` pressed on the journal feed: the caret goes to today, wherever it
+        // happens to be now, without the view navigating anywhere.
+        if nav.focusWritingIn == pageName {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.pageName == pageName,
+                      self.nav.focusWritingIn == pageName else { return }
+                self.nav.focusWritingIn = nil
+                self.focusForWritingIfNeeded(explicit: true)
+            }
+        }
         focusForWritingIfNeeded()
         applyPendingHighlightIfNeeded()
     }
@@ -506,10 +516,16 @@ final class OutlineEditorController: NSObject {
         return isToday ? .appendTrailing : .none
     }
 
-    private func focusForWritingIfNeeded() {
-        // Once per presentation: `present` runs on every data change, and
-        // re-focusing would yank the caret back after a click elsewhere.
-        guard focusedBlockID == nil, autoFocusedPresentation != presentationKey else { return }
+    /// - Parameter explicit: the user asked for this (`⌘J`), rather than it being
+    ///   the automatic "this page opens ready to write". An explicit request fires
+    ///   however many times it is asked for, and may take the caret from another
+    ///   day in the feed — which the automatic path must never do.
+    private func focusForWritingIfNeeded(explicit: Bool = false) {
+        // Already writing here: nothing to ask for.
+        guard focusedBlockID == nil else { return }
+        // Otherwise once per presentation: `present` runs on every data change,
+        // and re-focusing would yank the caret back after a click elsewhere.
+        guard explicit || autoFocusedPresentation != presentationKey else { return }
         // Nothing at all to show — an emptied file, a preamble-only file, or a
         // zoom into a childless block. Give the page the block it needs, so every
         // empty outline looks the same: one blank block with the hint in it.
@@ -518,7 +534,7 @@ final class OutlineEditorController: NSObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.rows.isEmpty else { return }
                 let id = self.materialiseFirstBlock()
-                guard self.mayTakeFocus else {
+                guard explicit || self.mayTakeFocus else {
                     self.reloadAndFocus(nil, selection: nil)
                     return
                 }
@@ -539,7 +555,8 @@ final class OutlineEditorController: NSObject {
         // Deferred for the same reason as the hook above — the table has to be
         // laid out and in a window before the editor can take first responder.
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.focusedBlockID == nil, self.mayTakeFocus else { return }
+            guard let self, self.focusedBlockID == nil,
+                  explicit || self.mayTakeFocus else { return }
             switch intent {
             case .focus(let id):
                 guard self.rows.contains(where: { $0.block.id == id }) else { return }
