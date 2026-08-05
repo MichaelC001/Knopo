@@ -1325,6 +1325,7 @@ final class OutlineEditorController: NSObject {
             editSessionBefore = app.document(for: pageName)
         }
         focusedBlockID = id
+        endOtherEditing()
         // Undo/redo has to be able to close this typing run first (§13).
         app.closePendingEdit = { [weak self] in self?.closeEditSessionForUndo() }
         // A hint only on the sole block of an otherwise-empty page (SPEC §5.4);
@@ -1354,6 +1355,30 @@ final class OutlineEditorController: NSObject {
             guard let self, self.focusedBlockID == id else { return }
             self.editor.revealCaret()
         }
+    }
+
+    /// One row per window is being edited at a time. Each outline normally ends
+    /// its own session when its editor resigns, but that runs through the editor's
+    /// *weak* `actions`, so an outline that has gone away can leave its editor
+    /// embedded and lit up with no one to clean it up. The incoming editor is the
+    /// one party guaranteed to still be here, so it does the clearing.
+    private func endOtherEditing() {
+        guard let root = tableView.window?.contentView else { return }
+        for stray in Self.embeddedEditors(in: root) where stray !== editor {
+            if let owner = stray.actions as? OutlineEditorController {
+                owner.endEditing()   // still live: let it close its own session
+            } else {
+                OutlineRowCell.enclosing(stray)?.discardEmbeddedEditor()
+                stray.removeFromSuperview()
+            }
+        }
+    }
+
+    private static func embeddedEditors(in view: NSView) -> [BlockEditorTextView] {
+        var found: [BlockEditorTextView] = []
+        if let editor = view as? BlockEditorTextView { found.append(editor) }
+        for subview in view.subviews { found.append(contentsOf: embeddedEditors(in: subview)) }
+        return found
     }
 
     func endEditing() {

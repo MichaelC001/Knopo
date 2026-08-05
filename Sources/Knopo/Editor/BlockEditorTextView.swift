@@ -697,8 +697,19 @@ final class BlockEditorTextView: NSTextView {
 
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { actions?.editorFocusLost() }
-        return resigned
+        guard resigned else { return false }
+        if let actions {
+            actions.editorFocusLost()
+        } else {
+            // `actions` is weak, and the row retains this view — so an outline
+            // that went away (a journal feed rebuilt around a new day) leaves its
+            // editor embedded with nothing left to end the session. Ending it is
+            // then this view's own job, or the row keeps its highlight and a
+            // still-animating insertion indicator indefinitely.
+            OutlineRowCell.enclosing(self)?.discardEmbeddedEditor()
+            removeFromSuperview()
+        }
+        return true
     }
 
     // MARK: - Syntax highlighting (SPEC §15)

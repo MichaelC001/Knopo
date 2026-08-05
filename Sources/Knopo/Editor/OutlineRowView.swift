@@ -176,6 +176,25 @@ final class OutlineRowCell: NSTableCellView {
         renderedView.emptyHint = hint
     }
 
+    /// Takes an embedded editor back out and shows this row's rendered content
+    /// again. For an editor whose outline has gone away: it is retained by this
+    /// row, so nothing else would ever remove it, and the row would keep a
+    /// highlight (and a blinking insertion indicator) for good.
+    func discardEmbeddedEditor() {
+        guard container.subviews.contains(where: { $0 is BlockEditorTextView }) else { return }
+        showRendered(renderedView.attributedString())
+    }
+
+    /// The row a view sits in, if any — an editor is a grandchild, via `container`.
+    static func enclosing(_ view: NSView) -> OutlineRowCell? {
+        var next: NSView? = view
+        while let current = next {
+            if let cell = current as? OutlineRowCell { return cell }
+            next = current.superview
+        }
+        return nil
+    }
+
     /// Unfocused: rendered Markdown (SPEC §5.4).
     func showRendered(_ attributed: NSAttributedString) {
         for view in container.subviews
