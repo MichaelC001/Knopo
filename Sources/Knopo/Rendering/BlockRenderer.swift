@@ -221,6 +221,11 @@ enum BlockRenderer {
     }() {
         didSet { UserDefaults.standard.set(zoom, forKey: zoomKey) }
     }
+    /// Page-title size. The journal feed's day headings are page titles too — a
+    /// day rendered in the feed and the same day opened on its own must not change
+    /// size — so both take it from here.
+    static var pageTitleFontSize: CGFloat { 24 * zoom }
+
     /// On-screen base text size (base × zoom). Everything sizes off this.
     static var baseFontSize: CGFloat { baseSize * zoom }
 

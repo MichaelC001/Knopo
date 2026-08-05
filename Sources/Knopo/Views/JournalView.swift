@@ -40,7 +40,7 @@ struct JournalDaySection: View {
                     nav.navigate(to: .page(name: day))
                 } label: {
                     Text(JournalDate(pageName: day)?.displayName ?? day)
-                        .font(.system(size: 20 * BlockRenderer.zoom, weight: .bold))
+                        .font(.system(size: BlockRenderer.pageTitleFontSize, weight: .bold))
                 }
                 .buttonStyle(.plain)
                 .help("Open day page (shows linked references)")
