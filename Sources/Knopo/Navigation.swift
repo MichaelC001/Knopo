@@ -18,6 +18,22 @@ enum NavTarget: Hashable {
         return nil
     }
 
+    /// Whether two targets show the same thing. Page and tag identity is
+    /// case-insensitive (SPEC §4.1, §8), so `[[foo]]` and `[[Foo]]` are one
+    /// destination; a zoomed page stays distinct from the whole page, since
+    /// those are genuinely different views. Used to keep the right sidebar free
+    /// of duplicate panes (§12).
+    func showsSame(as other: NavTarget) -> Bool {
+        switch (self, other) {
+        case (.page(let a, let zoomA), .page(let b, let zoomB)):
+            return PageName.key(a) == PageName.key(b) && zoomA == zoomB
+        case (.tag(let a), .tag(let b)):
+            return a.caseInsensitiveCompare(b) == .orderedSame
+        default:
+            return self == other
+        }
+    }
+
     /// Stable string form for persisting open right-sidebar panes (SPEC §12).
     /// Tab-delimited; page/tag names never contain tabs (PageName validation).
     var encoded: String {
@@ -74,6 +90,17 @@ struct RightPane: Hashable {
         // Legacy form (predating collapse): a bare NavTarget encoding.
         guard let t = NavTarget(encoded: encoded) else { return nil }
         self.init(target: t)
+    }
+}
+
+extension Array where Element == RightPane {
+    /// Drops panes whose target an earlier pane already shows, keeping the first
+    /// (and its collapse state) — the sidebar's one-pane-per-target rule (§12).
+    func deduplicatedByTarget() -> [RightPane] {
+        reduce(into: []) { panes, pane in
+            guard !panes.contains(where: { $0.target.showsSame(as: pane.target) }) else { return }
+            panes.append(pane)
+        }
     }
 }
 

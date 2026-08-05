@@ -67,6 +67,127 @@ import KnopoCore
         )
     }
 
+    /// Shift/Cmd+Clicking the same reference twice used to stack a second
+    /// identical card (two editors over one document). Re-opening now promotes
+    /// the pane that's already there.
+    @MainActor
+    @Test func reopeningATargetPromotesItsPaneInsteadOfDuplicating() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-panes-dedup-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try GraphStore(root: root)
+        let page = try store.createPage(named: "Alpha")
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+
+        nav.openInRightSidebar(.page(name: "Alpha"))
+        nav.openInRightSidebar(.page(name: "Beta"))
+        #expect(nav.rightPanes.map(\.target) == [.page(name: "Beta"), .page(name: "Alpha")])
+
+        // Same page again — differently cased, as a `[[alpha]]` ref would be.
+        nav.rightPanes[1].collapsed = true
+        nav.openInRightSidebar(.page(name: "alpha"))
+        #expect(nav.rightPanes.count == 2)
+        #expect(nav.rightPanes[0].target == .page(name: "Alpha"))  // stored casing kept
+        #expect(!nav.rightPanes[0].collapsed)                      // and revealed
+        #expect(nav.rightPanes[1].target == .page(name: "Beta"))
+
+        // A zoom is a different view of the page, so it gets its own pane.
+        nav.openInRightSidebar(.page(name: "Alpha", zoom: page.blocks[0].id))
+        #expect(nav.rightPanes.count == 3)
+
+        // Tags dedup case-insensitively too (§8).
+        nav.openInRightSidebar(.tag("todo"))
+        nav.openInRightSidebar(.tag("TODO"))
+        #expect(nav.rightPanes.count == 4)
+        #expect(nav.rightPanes[0].target == .tag("todo"))
+    }
+
+    /// Duplicates persisted by earlier builds collapse to one pane on restore.
+    @MainActor
+    @Test func restoringPanesDropsDuplicates() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-panes-restore-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try GraphStore(root: root)
+        try store.updateConfig {
+            $0.rightPanes = [
+                RightPane(target: .page(name: "Alpha"), collapsed: true).encoded,
+                RightPane(target: .page(name: "alpha")).encoded,
+                RightPane(target: .tag("todo")).encoded,
+                RightPane(target: .page(name: "Beta")).encoded,
+                RightPane(target: .tag("Todo")).encoded,
+            ]
+        }
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+
+        // First occurrence wins, order and collapse state preserved.
+        #expect(nav.rightPanes.map(\.target)
+            == [.page(name: "Alpha"), .tag("todo"), .page(name: "Beta")])
+        #expect(nav.rightPanes[0].collapsed)
+    }
+
+    /// `GraphStore.renamePage` rejects a target name only when a file sits behind
+    /// it, so renaming onto a *stub* (referenced but never written) succeeds — and
+    /// a pane already open on that stub then names the same page as the renamed
+    /// one. The two must fold into a single pane.
+    @MainActor
+    @Test func renamingOntoAnOpenStubDoesNotDuplicateItsPane() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-rename-stub-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try GraphStore(root: root)
+        var foo = try store.createPage(named: "Foo")
+        foo.blocks[0].content = "points at [[Bar]]"   // Bar becomes a stub
+        store.updatePage(foo)
+        try store.savePage(named: foo.name)
+
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+        nav.rightPanes = [
+            RightPane(target: .page(name: "Foo")),
+            RightPane(target: .page(name: "Bar"), collapsed: true),
+            RightPane(target: .page(name: "Other")),
+        ]
+
+        try nav.renamePage(from: "Foo", to: "Bar")
+
+        #expect(nav.rightPanes.map(\.target) == [.page(name: "Bar"), .page(name: "Other")])
+        #expect(!nav.rightPanes[0].collapsed)   // the renamed pane came first, expanded
+    }
+
+    /// The same rename onto a page that *does* have a file is refused outright,
+    /// so no pane is touched.
+    @MainActor
+    @Test func renamingOntoARealPageIsRefused() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-rename-clash-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try GraphStore(root: root)
+        for (name, text) in [("Foo", "FOO"), ("Bar", "BAR")] {
+            var p = try store.createPage(named: name)
+            p.blocks[0].content = text
+            store.updatePage(p)
+            try store.savePage(named: p.name)
+        }
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+        nav.rightPanes = [RightPane(target: .page(name: "Foo")), RightPane(target: .page(name: "Bar"))]
+
+        #expect(throws: (any Error).self) { try nav.renamePage(from: "Foo", to: "Bar") }
+        #expect(nav.rightPanes.map(\.target) == [.page(name: "Foo"), .page(name: "Bar")])
+        #expect(store.page(named: "Bar").blocks.map(\.content) == ["BAR"])   // not clobbered
+    }
+
     @MainActor
     @Test func renamePageUpdatesRightSidebarTargets() throws {
         let root = FileManager.default.temporaryDirectory

@@ -59,9 +59,12 @@ final class Navigator: ObservableObject {
         find.nav = self
         // Restore the right-sidebar panes saved for this graph (§12). Done after
         // stored-property init so `resolve` (which reads `app`) is available.
+        // Duplicates saved by earlier builds are dropped here, keeping the
+        // one-pane-per-target invariant that `openInRightSidebar` now holds.
         rightPanes = app.store.config.rightPanes
             .compactMap(RightPane.init(encoded:))
             .compactMap { pane in resolve(pane.target).map { RightPane(target: $0, collapsed: pane.collapsed) } }
+            .deduplicatedByTarget()
         restored = true
     }
 
@@ -103,9 +106,23 @@ final class Navigator: ObservableObject {
         navigate(to: .page(name: name))
     }
 
+    /// Open a target as a right-sidebar pane (§12). A target that's already open
+    /// moves back to the top and expands rather than opening a second identical
+    /// card: the sidebar is a set of reference views, and two editors over one
+    /// document would alias.
     func openInRightSidebar(_ target: NavTarget) {
         guard let resolved = resolve(target) else { return }
-        rightPanes.insert(RightPane(target: resolved), at: 0) // newest on top
+        guard let i = rightPanes.firstIndex(where: { $0.target.showsSame(as: resolved) }) else {
+            rightPanes.insert(RightPane(target: resolved), at: 0) // newest on top
+            return
+        }
+        // Keep the pane's own target (its stored casing) — only its place in the
+        // stack and its collapse state change.
+        var moved = rightPanes
+        var pane = moved.remove(at: i)
+        pane.collapsed = false   // re-opening a collapsed card reveals it
+        moved.insert(pane, at: 0)
+        if moved != rightPanes { rightPanes = moved }
     }
 
     /// Open the page holding a block (full page, in context — not zoomed) and
@@ -243,6 +260,10 @@ final class Navigator: ObservableObject {
         if case .page(let name, let zoom) = current, PageName.key(name) == oldKey {
             current = .page(name: new, zoom: zoom)
         }
+        // Renaming onto a *stub* target is allowed (the collision guard in
+        // `GraphStore.renamePage` only rejects names with a file behind them), so
+        // a pane already open on that stub would collide with the renamed one —
+        // dedup to keep the one-pane-per-target invariant.
         let renamedPanes = rightPanes.map { pane in
             guard case .page(let name, let zoom) = pane.target,
                   PageName.key(name) == oldKey else { return pane }
@@ -250,7 +271,7 @@ final class Navigator: ObservableObject {
                 target: .page(name: new, zoom: zoom),
                 collapsed: pane.collapsed
             )
-        }
+        }.deduplicatedByTarget()
         if renamedPanes != rightPanes {
             rightPanes = renamedPanes
         }
