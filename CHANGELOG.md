@@ -2,6 +2,27 @@
 
 Notable changes per release, newest first. Dates are release dates.
 
+## v0.6.1 (2026-08-05)
+
+A maintenance release: typing and saving stay quick in large pages, and a round of editing, journal and sidebar fixes.
+
+**Improved**
+- Typing in a large page stays responsive: the indexing that follows each pause is around 40% faster on very large pages, and an edit that only changes text re-indexes just the blocks it touched.
+- A page is written 2 s after the last keystroke, and never later than 10 s after the first unsaved edit.
+- The caret always stays on screen when you move across blocks in edit mode.
+- `⌘J` always goes to the journal. Pressed while the journal is already showing, it puts the caret in today's writing block rather than opening today's own page, so repeated presses no longer cycle between two views.
+- A day's heading is the same size in the journal feed as on its own page, so opening a day no longer resizes its title.
+- A page's only block keeps its bullet, and placeholder text only appears in edit mode.
+- Graphs on filesystems with no shared memory (SMB, NFS) open using a single-connection index instead of refusing to open. Reads wait behind a write there, so it is slower but correct.
+- Knopo no longer mistakes its own save for an outside edit while you type — each mix-up cost a fruitless scan of the whole graph.
+
+**Fixed**
+- Quitting or switching away from Knopo writes pending edits immediately.
+- Deleting a journal day's text removes that day from the feed, instead of leaving it there for good as a blank entry.
+- A journal feed rebuilt around a new day no longer leaves a stale editor behind.
+- The empty-block hint draws on the same baseline as the block's own text.
+- `⇧`/`⌘`+Click on a page already open in the right sidebar brings that card to the top and expands it, instead of stacking a second copy of the same page.
+
 ## v0.6.0 (2026-08-01)
 
 Tables, and an editing pass: journals open ready to write, clicks and arrows land where you meant, and undo works while you type.
