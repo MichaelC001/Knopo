@@ -45,7 +45,8 @@ delete all selected blocks together. A selected parent carries its subtree with
 it.
 
 Blocks can be empty. An empty leaf hides its bullet when it is not focused, but
-remains available for editing.
+remains available for editing — unless it is the page's only block, which keeps its
+bullet so an empty page still shows where to write.
 
 **Today's journal opens ready to write.** Whether it is blank or already has
 today's notes in it, the caret starts in an empty block at the end, so you can

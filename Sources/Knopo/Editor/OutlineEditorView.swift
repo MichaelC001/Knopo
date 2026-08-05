@@ -568,6 +568,18 @@ final class OutlineEditorController: NSObject {
         return true
     }
 
+    /// Whether a row hides its bullet (SPEC §5.2). An empty leaf does — an outline
+    /// shouldn't be littered with dots for blocks holding nothing — with two
+    /// exceptions. The focused one keeps it, so a block you are about to type in
+    /// doesn't lose its dot. And a page's *only* block keeps it, because that is
+    /// the whole page: hidden, an empty page renders as nothing at all, and the
+    /// bullet is the affordance every outliner uses to say "a block lives here".
+    static func hidesBullet(
+        content: String, hasChildren: Bool, isFocused: Bool, isOnlyRow: Bool
+    ) -> Bool {
+        content.isEmpty && !hasChildren && !isFocused && !isOnlyRow
+    }
+
     /// Creates the block an empty outline needs — a child of the zoom root when
     /// zoomed. In memory only (no `commit`), so opening a page never writes to it;
     /// the block reaches disk once you type in it.
@@ -2235,10 +2247,9 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             default: return false
             }
         }
-        // Hide the bullet on empty leaf blocks — but never on the focused one,
-        // so a freshly-created block you're about to type in keeps its bullet.
-        let isEmptyLeaf = !model.hasChildren && model.block.content.isEmpty
-            && model.block.id != focusedBlockID
+        let isEmptyLeaf = Self.hidesBullet(
+            content: model.block.content, hasChildren: model.hasChildren,
+            isFocused: model.block.id == focusedBlockID, isOnlyRow: rows.count == 1)
         // `background-color:: <name>` tints the block as a soft colored box (SPEC §5.6).
         let blockColor = model.block.properties
             .first { $0.key == BlockColor.propertyKey }
@@ -2256,10 +2267,6 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             blockColor: blockColor,
             callbacks: rowCallbacks(for: model.block.id)
         )
-        // The empty-page hint (§5.4). Set on every row — nil for ordinary ones —
-        // so a reused cell never keeps a stale one.
-        cell.setEmptyHint(
-            rows.count == 1 && isEmptyLeaf ? BlockRenderer.emptyBlockHint : nil)
         if model.block.id == focusedBlockID {
             cell.embedEditor(editor)
         } else {

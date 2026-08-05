@@ -53,15 +53,25 @@ import KnopoCore
         #expect(indicator.frame.height == 21)
     }
 
-    /// The rendered row shows the same hint when the block isn't focused — that's
-    /// what a right-sidebar pane, and an outline that couldn't take focus, fall
-    /// back to. One string, one look, focused or not.
-    @Test func theRenderedRowCarriesTheSameHint() {
-        let view = RenderedTextView.create()
-        view.emptyHint = BlockRenderer.emptyBlockHint
-        #expect(view.emptyHint == BlockRenderer.emptyBlockHint)
-        // Still nothing in the text: the hint is drawn, never inserted.
-        #expect(view.textStorage?.length == 0)
+    /// The hint belongs to the block you are typing in, so an *unfocused* empty
+    /// block shows no prose at all — unfocused, and with the empty leaf's bullet
+    /// hidden, it read as page content rather than as somewhere to type. The
+    /// bullet carries that job instead, per `hidesBullet`.
+    @Test func anUnfocusedEmptyBlockShowsItsBulletRatherThanTheHint() {
+        // A page's only block: bullet shown, so an empty page isn't blank.
+        #expect(!OutlineEditorController.hidesBullet(
+            content: "", hasChildren: false, isFocused: false, isOnlyRow: true))
+        // An empty block among others keeps hiding its dot (SPEC §5.2)…
+        #expect(OutlineEditorController.hidesBullet(
+            content: "", hasChildren: false, isFocused: false, isOnlyRow: false))
+        // …unless it is the one being typed in.
+        #expect(!OutlineEditorController.hidesBullet(
+            content: "", hasChildren: false, isFocused: true, isOnlyRow: false))
+        // A parent, or any block with text, is never hidden.
+        #expect(!OutlineEditorController.hidesBullet(
+            content: "", hasChildren: true, isFocused: false, isOnlyRow: false))
+        #expect(!OutlineEditorController.hidesBullet(
+            content: "text", hasChildren: false, isFocused: false, isOnlyRow: false))
     }
 
     /// The hint stands in for text that isn't there, so it has to sit on exactly

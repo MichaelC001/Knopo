@@ -170,12 +170,6 @@ final class OutlineRowCell: NSTableCellView {
         needsLayout = true
     }
 
-    /// Sets the empty-page hint on the rendered view (nil for every ordinary row,
-    /// so a reused cell never keeps a stale one).
-    func setEmptyHint(_ hint: String?) {
-        renderedView.emptyHint = hint
-    }
-
     /// Takes an embedded editor back out and shows this row's rendered content
     /// again. For an editor whose outline has gone away: it is retained by this
     /// row, so nothing else would ever remove it, and the row would keep a
@@ -550,14 +544,6 @@ final class RenderedTextView: NSTextView {
 
     // MARK: Inline pills (code and tags)
 
-    /// Hint for an empty block that is its page's only content — drawn here for
-    /// the *unfocused* case, which is what a right-sidebar pane shows and what an
-    /// outline that couldn't take focus falls back to. The focused editor draws
-    /// the same string at the same place (SPEC §5.4).
-    var emptyHint: String? {
-        didSet { if emptyHint != oldValue { needsDisplay = true } }
-    }
-
     override func draw(_ dirtyRect: NSRect) {
         // Behind the glyphs: the table grid, then inline-code and tag
         // backgrounds (a pill inside a cell paints over the header band).
@@ -565,9 +551,6 @@ final class RenderedTextView: NSTextView {
         drawPills(key: BlockRenderer.tagKey, fill: BlockRenderer.tagBackground)
         drawPills(key: BlockRenderer.inlineCodeKey, fill: .secondarySystemFill)
         super.draw(dirtyRect)
-        if let emptyHint, textStorage?.length == 0 {
-            BlockRenderer.drawEmptyHint(emptyHint, in: self)
-        }
     }
 
     /// The grid and header band of a rendered table (SPEC §5.2). TextKit 2 has
