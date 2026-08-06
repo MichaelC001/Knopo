@@ -1058,9 +1058,8 @@ final class RenderedTextView: NSTextView {
         if storage.attribute(.embedRegion, at: index, effectiveRange: nil) != nil { return nil }
         var range = NSRange(location: 0, length: 0)
         guard let url = storage.attribute(.link, at: index, effectiveRange: &range) as? URL,
-              url.scheme == "knopo", url.host == "page" else { return nil }
-        let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
-        guard !name.isEmpty else { return nil }
+              url.scheme == "knopo", url.host == "page",
+              let name = KnopoURL.pageName(from: url) else { return nil }
         return (name, range)
     }
 }

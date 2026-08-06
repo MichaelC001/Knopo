@@ -67,6 +67,53 @@ import KnopoCore
         )
     }
 
+    /// A query/backlink result row links as `knopo://page/<name>?block=<id>`, and
+    /// a namespaced name percent-encodes its `/`. Decoding that name back with
+    /// `lastPathComponent` kept only the trailing part, so clicking the row opened
+    /// a stub ("Knopo") instead of the real page ("Projects/Knopo").
+    @MainActor
+    @Test func openingAResultRowKeepsTheNamespaceInThePageName() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-nav-namespace-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try GraphStore(root: root)
+        var page = try store.createPage(named: "Projects/Knopo")
+        page.blocks[0].content = "a namespaced hit"
+        store.updatePage(page)
+        try store.savePage(named: page.name)
+
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+        let blockID = page.blocks[0].id
+
+        // Take the URL back out of an `.link` attribute, as a click does: after
+        // that NSURL round-trip `url.lastPathComponent` answers "Knopo", so a
+        // URL built inline would not reproduce the bug.
+        func asClicked(_ url: URL) -> URL {
+            let s = NSAttributedString(string: "row", attributes: [.link: url])
+            return s.attribute(.link, at: 0, effectiveRange: nil) as! URL
+        }
+
+        nav.openURL(asClicked(KnopoURL.block(blockID, onPage: "Projects/Knopo")))
+
+        #expect(nav.current == .page(name: "Projects/Knopo"))
+        #expect(nav.highlightTarget?.pageKey == PageName.key("Projects/Knopo"))
+
+        // The page header above the rows (a plain page link) must agree.
+        nav.openURL(asClicked(KnopoURL.page("Projects/Knopo")))
+        #expect(nav.current == .page(name: "Projects/Knopo"))
+
+        // And in the right sidebar, which takes the same path.
+        nav.openURL(asClicked(KnopoURL.block(blockID, onPage: "Projects/Knopo")), inSidebar: true)
+        #expect(nav.rightPanes.map(\.target) == [.page(name: "Projects/Knopo")])
+
+        // The hover-preview lookup reads the same link attribute.
+        #expect(KnopoURL.pageName(from: asClicked(KnopoURL.page("Projects/Knopo")))
+            == "Projects/Knopo")
+    }
+
     /// Shift/Cmd+Clicking the same reference twice used to stack a second
     /// identical card (two editors over one document). Re-opening now promotes
     /// the pane that's already there.

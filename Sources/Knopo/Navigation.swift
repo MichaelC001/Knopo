@@ -178,6 +178,18 @@ enum KnopoURL {
         URL(string: "knopo://tag/\(name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name)")!
     }
 
+    /// The page a `knopo://page/<name>[?block=…]` link names.
+    ///
+    /// Always go through this (or `decode`) rather than `url.lastPathComponent`:
+    /// a namespaced name encodes its `/` as `%2F`, and once the URL has been
+    /// through an `NSAttributedString` `.link` attribute (every rendered link
+    /// has), `lastPathComponent` decodes that escape *and* treats it as a
+    /// separator — "Tests%2FPage1" comes back as "Page1", which opened a stub.
+    static func pageName(from url: URL) -> String? {
+        guard case .page(let name, _) = decode(url), !name.isEmpty else { return nil }
+        return name
+    }
+
     /// Decodes an internal or external URL into a navigation action.
     static func decode(_ url: URL) -> NavTarget? {
         guard url.scheme == "knopo" else { return nil }

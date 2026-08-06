@@ -199,22 +199,20 @@ final class Navigator: ObservableObject {
     /// Handles a click on any rendered link: internal targets navigate,
     /// external URLs open in the system browser (SPEC §5.1).
     func openURL(_ url: URL, inSidebar: Bool = false) {
-        // A `…/page/<name>?block=<id>` link (query / backlink result): open the
-        // page and flash the block, rather than zooming into it.
-        if url.scheme == "knopo", url.host == "page",
-           let item = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-               .queryItems?.first(where: { $0.name == "block" }),
-           let raw = item.value, let id = UUID(uuidString: raw) {
-            let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
-            let content = ((try? app.store.cache.locateBlock(id)) ?? nil)?.content ?? ""
-            navigateToBlock(pageName: name, blockID: id, content: content, inSidebar: inSidebar)
+        guard let target = KnopoURL.decode(url) else {
+            NSWorkspace.shared.open(url)
             return
         }
-        if let target = KnopoURL.decode(url) {
-            inSidebar ? openInRightSidebar(target) : navigate(to: target)
-        } else {
-            NSWorkspace.shared.open(url)
+        // A `…/page/<name>?block=<id>` link (query / backlink result): open the
+        // page and flash the block, rather than zooming into it. The name comes
+        // from `decode` — never from `lastPathComponent`, which collapses a
+        // namespaced name to its last segment (see `KnopoURL.decode`).
+        if url.host == "page", case .page(let name, let zoom) = target, let zoom {
+            let content = ((try? app.store.cache.locateBlock(zoom)) ?? nil)?.content ?? ""
+            navigateToBlock(pageName: name, blockID: zoom, content: content, inSidebar: inSidebar)
+            return
         }
+        inSidebar ? openInRightSidebar(target) : navigate(to: target)
     }
 
     // MARK: - In-page find
