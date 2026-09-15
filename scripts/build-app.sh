@@ -16,7 +16,10 @@ APP="build/Knopo.app"
 BIN=".build/$CONFIG/Knopo"
 
 echo "Building ($CONFIG)…"
-swift build -c "$CONFIG"
+# Pass the SDK directly to Clang's linker driver. Xcode 27 otherwise records
+# the deployment target as the SDK version, which enables the older macOS UI.
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+swift build -c "$CONFIG" -Xswiftc -Xclang-linker -Xswiftc "-isysroot$SDK_PATH"
 
 echo "Assembling $APP…"
 rm -rf "$APP"
