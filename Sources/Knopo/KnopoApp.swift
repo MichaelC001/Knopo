@@ -265,17 +265,12 @@ private struct GraphCommands: Commands {
     private var graph: GraphActions? { focusedGraph ?? activeGraph.actions }
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            // SwiftUI's WindowGroup has no New Tab command. Create a new scene
-            // via the window controller, then explicitly tab it into the current
-            // window (the explicit `addTabbedWindow` is what makes it a tab
-            // rather than a detached window).
+            // The window controller creates and tabs the new scene. Adding it
+            // again can put tab labels in the wrong order.
             Button("New Tab") {
                 guard let current = NSApp.keyWindow,
                       let controller = current.windowController else { return }
                 controller.newWindowForTab(nil)
-                if let added = NSApp.keyWindow, added != current {
-                    current.addTabbedWindow(added, ordered: .above)
-                }
             }
             .keyboardShortcut("t", modifiers: .command)
             Button("Open Graph…") { graph?.openGraph() }
