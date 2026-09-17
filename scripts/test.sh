@@ -8,9 +8,12 @@ FWK=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
 # The Swift Testing runtime's interop dylib lives here and isn't on the
 # default runpath under Command Line Tools.
 LIB=/Library/Developer/CommandLineTools/Library/Developer/usr/lib
-# Skipped where the CLT aren't installed (some CI images ship only Xcode).
+# Only when the toolchain has no Testing.framework. Xcode ships one, and its
+# @Test macro needs that same version.
 CLT_FLAGS=()
-if [[ -d "$FWK" ]]; then
+# Without || true, set -e aborts here when no developer dir is set.
+XCODE_FWK="$(xcode-select -p 2>/dev/null || true)/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+if [[ ! -d "$XCODE_FWK/Testing.framework" && -d "$FWK" ]]; then
   CLT_FLAGS=(
     -Xswiftc -F$FWK
     -Xswiftc -Xfrontend -Xswiftc -disable-cross-import-overlays
