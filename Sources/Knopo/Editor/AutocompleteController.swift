@@ -109,16 +109,27 @@ final class AutocompleteController: NSObject {
     private static func detectTrigger(in text: NSString, caret: Int) -> Trigger? {
         guard caret > 0, caret <= text.length else { return nil }
         var candidates: [Trigger] = []
-        if let (location, query) = bracketTrigger(open: "[[", close: "]]", in: text, caret: caret) {
+        if let trigger = InlineReferenceEditing.trigger(
+            open: "[[", close: "]]", in: text, caret: caret
+        ) {
             // `#[[` is the bracketed *tag* form, not a page ref (SPEC §8.1).
-            if location > 0, text.character(at: location - 1) == 0x23 /* # */ {
-                candidates.append(Trigger(mode: .tag, location: location - 1, query: query))
+            if trigger.location > 0,
+               text.character(at: trigger.location - 1) == 0x23 /* # */ {
+                candidates.append(Trigger(
+                    mode: .tag, location: trigger.location - 1, query: trigger.query
+                ))
             } else {
-                candidates.append(Trigger(mode: .pageRef, location: location, query: query))
+                candidates.append(Trigger(
+                    mode: .pageRef, location: trigger.location, query: trigger.query
+                ))
             }
         }
-        if let (location, query) = bracketTrigger(open: "((", close: "))", in: text, caret: caret) {
-            candidates.append(Trigger(mode: .blockRef, location: location, query: query))
+        if let trigger = InlineReferenceEditing.trigger(
+            open: "((", close: "))", in: text, caret: caret
+        ) {
+            candidates.append(Trigger(
+                mode: .blockRef, location: trigger.location, query: trigger.query
+            ))
         }
         if let trigger = wordTrigger(0x23 /* # */, mode: .tag, in: text, caret: caret) {
             candidates.append(trigger)
@@ -128,23 +139,6 @@ final class AutocompleteController: NSObject {
         }
         // The trigger nearest the caret wins.
         return candidates.max { $0.location < $1.location }
-    }
-
-    /// An unclosed `[[` / `((` left of the caret, on the same line.
-    private static func bracketTrigger(
-        open: String, close: String, in text: NSString, caret: Int
-    ) -> (location: Int, query: String)? {
-        let windowStart = max(0, caret - 160)
-        let searchRange = NSRange(location: windowStart, length: caret - windowStart)
-        let openRange = text.range(of: open, options: .backwards, range: searchRange)
-        guard openRange.location != NSNotFound else { return nil }
-        // A backslash before the opener escapes it (`\[[`, `\((`) — no trigger.
-        if openRange.location > 0, text.character(at: openRange.location - 1) == 0x5C { return nil }
-        let queryStart = openRange.location + 2
-        guard caret >= queryStart else { return nil }
-        let query = text.substring(with: NSRange(location: queryStart, length: caret - queryStart))
-        guard !query.contains(close), !query.contains("\n"), query.count <= 80 else { return nil }
-        return (openRange.location, query)
     }
 
     /// A `#word` or `/word` trigger whose word the caret sits in.
@@ -366,14 +360,14 @@ final class AutocompleteController: NSObject {
         // the close. Absorb a matching close sitting right after the caret.
         let close = mode == .pageRef ? "]]" : mode == .blockRef ? "))" : ""
         var absorbedClose = false
-        if !close.isEmpty, insertion.hasSuffix(close) {
-            let ns = textView.string as NSString
-            let len = (close as NSString).length
-            if caret + len <= ns.length,
-               ns.substring(with: NSRange(location: caret, length: len)) == close {
-                replaceRange.length += len
-                absorbedClose = true
-            }
+        if !close.isEmpty,
+           let completion = InlineReferenceEditing.completion(
+               insertion: insertion, close: close, in: textView.string as NSString,
+               triggerLocation: triggerLocation,
+               selection: NSRange(location: caret, length: 0)
+           ) {
+            replaceRange = completion.replacementRange
+            absorbedClose = completion.absorbedClose
         }
         // After completing any reference/tag (`[[Page]]`, `#tag`, `((block))`),
         // add a trailing space so you can keep typing; it's removed if the very
@@ -392,6 +386,11 @@ final class AutocompleteController: NSObject {
         if case .block(let hit) = item {
             onBlockRefInserted(hit)
         }
+    }
+
+    /// The caller is about to insert a complete reference and place its caret.
+    func suppressNextTextChange() {
+        suppressNextChange = true
     }
 
     // MARK: - Panel UI

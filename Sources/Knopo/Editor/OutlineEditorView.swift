@@ -2990,6 +2990,12 @@ extension OutlineEditorController: BlockEditorActions {
         reloadAndFocus(last.id, selection: NSRange(location: caret, length: 0))
     }
 
+    func editorPersistPastedBlockReference(_ id: UUID) {
+        guard let target = app.store.resolveBlock(id), !target.block.idPersisted else { return }
+        try? app.persistBlockID(id, inPageNamed: target.pageName)
+        app.dataVersion += 1
+    }
+
     func editorImportImageAssets(_ fileURLs: [URL]) -> String? {
         let markdown = fileURLs.compactMap { url -> String? in
             guard GraphStore.isImageFile(url),

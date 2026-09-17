@@ -259,7 +259,7 @@ All commands are one undo step together with the keystrokes of the current edit 
 
 - Both appear under the prefix `embed` as well as their own names, so typing `/embed` lists both.
 - Committing replaces the trigger with a skeleton — `{{embed [[]]}}` (page) or `{{embed (())}}` (block) — and drops the caret between the inner brackets, which immediately re-opens the matching picker (the page autocomplete §6.1, or the block search §7.1) so the target is chosen inline.
-- Choosing a target inserts `[[Name]]` / `((uuid))` between the inner brackets, **absorbing** the skeleton's pre-supplied closing `]]` / `))` so the result is exactly `{{embed [[Name]]}}` / `{{embed ((uuid))}}` (never a doubled close). A block target also persists `id::` on its source block, as with any `((ref))` (§7.1).
+- Choosing a target inserts `[[Name]]` / `((uuid))` between the inner brackets, **absorbing** the skeleton's pre-supplied closing `]]` / `))` so the result is exactly `{{embed [[Name]]}}` / `{{embed ((uuid))}}` (never a doubled close). Pasting a complete `[[Name]]` / `((uuid))` into the matching skeleton does the same. A chosen block target, or a pasted one that resolves in the graph, persists `id::` on its source block as with any `((ref))` (§7.1).
 - Dismissing the inner picker (`Esc`) leaves the skeleton in place as ordinary, editable text; an incomplete `{{embed [[]]}}` is not a valid embed and renders literally until completed (§7.6).
 
 #### 5.5.4 `/date`

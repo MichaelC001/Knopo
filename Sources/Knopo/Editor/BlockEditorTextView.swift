@@ -21,6 +21,7 @@ protocol BlockEditorActions: AnyObject {
     func editorCaretMoved()
     func editorCopySubtreeMarkdown() -> String?
     func editorPasteBlocks(_ text: String)
+    func editorPersistPastedBlockReference(_ id: UUID)
     func editorImportImageAssets(_ fileURLs: [URL]) -> String?
     func editorImportPastedImage(png data: Data) -> String?
     func editorFocusLost()
@@ -642,16 +643,28 @@ final class BlockEditorTextView: NSTextView {
             return false
         }()
         let text = pasteboard.string(forType: .string)
+        if let text,
+           let completion = InlineReferenceEditing.pastedReference(
+               text, in: string, replacing: selectedRange()
+           ) {
+            autocomplete?.suppressNextTextChange()
+            insertText(completion.insertion, replacementRange: completion.replacementRange)
+            setSelectedRange(NSRange(location: completion.caretLocation, length: 0))
+            if let id = completion.blockID {
+                actions?.editorPersistPastedBlockReference(id)
+            }
+            return true
+        }
         // A table is one block as well — both when pasting into one and when the
         // pasted text is itself a table (the common case: a table copied from a
         // page into an empty block). Splitting it by lines would shred the grid
         // into a block per row.
         let isTable = BlockKind.classify(string).isTable
             || (text.map { BlockKind.classify($0).isTable } ?? false)
-        if let text, text.contains("\n"),
+        if let text, text.contains("\n"), let actions,
            !isQuote, !isTable,
            !BlockKind.caretInsideFence(string, utf16Caret: selectedRange().location) {
-            actions?.editorPasteBlocks(text)
+            actions.editorPasteBlocks(text)
             return true
         }
         if text == nil {
