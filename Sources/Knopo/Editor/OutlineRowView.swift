@@ -643,44 +643,101 @@ final class RenderedTextView: NSTextView {
 
     /// The grid and header band of a rendered table (SPEC §5.2). TextKit 2 has
     /// no `NSTextTable`, so `BlockRenderer` lays the cells out on tab stops and
-    /// hands us the column geometry; the rules are ours to draw. A table starts
-    /// the block and each of its rows is its own paragraph, so the first
-    /// `rowCount` layout fragments are the rows — anything after them (the
-    /// block's visible `key:: value` property lines) gets no rules.
+    /// hands us the column geometry; the rules are ours to draw. Each table run
+    /// records its row count. This also supports tables inside generated embed
+    /// regions, where a table can start after a bullet and another block.
     private func drawTableGrid() {
-        guard let storage = textStorage, storage.length > 0,
-              let geometry = storage.attribute(BlockRenderer.tableKey, at: 0, effectiveRange: nil)
-                as? BlockRenderer.TableGeometry,
-              geometry.columnEdges.count >= 2, geometry.rowCount > 0,
-              let tlm = textLayoutManager else { return }
-        let edges = geometry.columnEdges
-        tlm.ensureLayout(for: tlm.documentRange)
-        var rows: [CGRect] = []
-        tlm.enumerateTextLayoutFragments(from: nil, options: []) { fragment in
-            rows.append(fragment.layoutFragmentFrame)
-            return rows.count < geometry.rowCount
+        for table in tableLayouts() {
+            drawTableGrid(table)
         }
-        guard let first = rows.first, let last = rows.last else { return }
+    }
+
+    private struct TableLayout {
+        let range: NSRange
+        let geometry: BlockRenderer.TableGeometry
+        let rows: [CGRect]
+        /// Includes the one-point rules at the bottom and right edges.
+        let bounds: CGRect
+    }
+
+    /// Bounds of all drawn table rules, including their outer padding.
+    func tableGridRect() -> NSRect? {
+        let bounds = tableGridRects().reduce(NSRect.null) { $0.union($1) }
+        return bounds.isNull ? nil : bounds
+    }
+
+    /// Each table's drawn bounds, in document order.
+    func tableGridRects() -> [NSRect] {
+        tableLayouts().map(\.bounds)
+    }
+
+    /// Shared by grid drawing and backgrounds so their bounds agree.
+    private func tableLayouts() -> [TableLayout] {
+        guard let storage = textStorage, storage.length > 0,
+              let tlm = textLayoutManager else { return [] }
+        var tables: [(NSRange, BlockRenderer.TableGeometry)] = []
+        storage.enumerateAttribute(
+            BlockRenderer.tableKey,
+            in: NSRange(location: 0, length: storage.length)
+        ) { value, range, _ in
+            guard let geometry = value as? BlockRenderer.TableGeometry,
+                  geometry.columnEdges.count >= 2, geometry.rowCount > 0 else { return }
+            tables.append((range, geometry))
+        }
+        guard !tables.isEmpty else { return [] }
+        tlm.ensureLayout(for: tlm.documentRange)
+        var fragments: [(range: NSRange, band: CGRect)] = []
+        tlm.enumerateTextLayoutFragments(from: nil, options: []) { fragment in
+            guard let manager = tlm.textContentManager else { return false }
+            let start = manager.offset(from: manager.documentRange.location,
+                                       to: fragment.rangeInElement.location)
+            let length = manager.offset(from: fragment.rangeInElement.location,
+                                        to: fragment.rangeInElement.endLocation)
+            let band = fragment.textLineFragments.reduce(CGRect.null) {
+                $0.union($1.typographicBounds)
+            }.offsetBy(dx: fragment.layoutFragmentFrame.minX,
+                       dy: fragment.layoutFragmentFrame.minY)
+            fragments.append((NSRange(location: start, length: length), band))
+            return true
+        }
         let origin = textContainerOrigin
-        // A row's breathing room is paragraph spacing, and TextKit drops the
-        // leading spacing of the first paragraph and the trailing spacing of the
-        // last — so the outer rules are pushed out by that much themselves,
-        // keeping the gap around the text even on all four sides. The room comes
-        // from the container's own vertical inset, so nothing is clipped.
-        let outerPad = BlockRenderer.tableRowPad
-        let top = first.minY + origin.y - outerPad
-        let bottom = last.maxY + origin.y + outerPad
-        let left = edges[0] + origin.x
-        let right = edges[edges.count - 1] + origin.x
+        var layouts: [TableLayout] = []
+        for (range, geometry) in tables {
+            let rows = Array(fragments.filter {
+                NSIntersectionRange($0.range, range).length > 0
+            }.prefix(geometry.rowCount).map(\.band))
+            guard rows.count == geometry.rowCount,
+                  let first = rows.first, let last = rows.last else { continue }
+            let edges = geometry.columnEdges
+            // Line bounds exclude paragraph spacing, even in the middle of an embed.
+            let pad = BlockRenderer.tableRowPad
+            let bounds = CGRect(
+                x: edges[0] + origin.x, y: first.minY + origin.y - pad,
+                width: edges[edges.count - 1] - edges[0] + 1,
+                height: last.maxY - first.minY + pad * 2 + 1)
+            layouts.append(TableLayout(range: range, geometry: geometry,
+                                       rows: rows, bounds: bounds))
+        }
+        return layouts
+    }
+
+    private func drawTableGrid(_ table: TableLayout) {
+        let edges = table.geometry.columnEdges
+        let rows = table.rows
+        let first = rows[0]
+        let origin = textContainerOrigin
+        let top = table.bounds.minY
+        let bottom = table.bounds.maxY - 1
+        let left = table.bounds.minX
+        let right = table.bounds.maxX - 1
 
         BlockRenderer.tableHeaderFill.setFill()
         NSRect(x: left, y: top, width: right - left,
                height: first.maxY + origin.y - top).fill()
 
         NSColor.separatorColor.setFill()
-        // A rule above the first row, below each row, and the bottom border.
         var horizontals = [top]
-        horizontals += rows.dropLast().map { $0.maxY + origin.y }
+        horizontals += rows.dropLast().map { $0.maxY + origin.y + BlockRenderer.tableRowPad }
         horizontals.append(bottom)
         for y in horizontals {
             NSRect(x: left, y: y, width: right - left, height: 1).fill()
@@ -1052,7 +1109,7 @@ final class RenderedTextView: NSTextView {
     }
 
     /// Bounding rect (in this view's coordinates) of all text carrying
-    /// `.embedRegion`, so the row can grey-box only the transcluded lines.
+    /// `.embedRegion`, including the outer rules of any embedded tables.
     /// Returns nil when there is no embed.
     func embedRegionRect() -> NSRect? {
         guard let storage = textStorage, storage.length > 0,
@@ -1072,6 +1129,11 @@ final class RenderedTextView: NSTextView {
                 union = union.isNull ? r : union.union(r)
                 return true
             }
+        }
+        for table in tableLayouts() {
+            guard storage.attribute(.embedRegion, at: table.range.location,
+                                    effectiveRange: nil) as? Bool == true else { continue }
+            union = union.isNull ? table.bounds : union.union(table.bounds)
         }
         return union.isNull ? nil : union
     }

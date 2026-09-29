@@ -1054,7 +1054,9 @@ final class OutlineEditorController: NSObject {
             resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
             assetsDir: app.store.assetsDir,
             inlineQuoteBar: false, // the row cell draws one continuous bar
-            resolveEmbed: { [weak self] target in self?.renderEmbed(target) },
+            resolveEmbed: { [weak self] target in
+                self?.renderEmbed(target, contentWidth: contentWidth)
+            },
             resolveQuery: { [weak self] expr in self?.renderQuery(expr) },
             contentWidth: contentWidth,
             tableWidth: tableWidth,
@@ -1062,8 +1064,11 @@ final class OutlineEditorController: NSObject {
         ))
     }
 
-    private func renderEmbed(_ target: EmbedTarget) -> NSAttributedString? {
-        renderEmbed(target, embedDepth: 0, visited: [])
+    /// Internal so layout tests can render a transclusion without opening a window.
+    func renderEmbed(
+        _ target: EmbedTarget, contentWidth: CGFloat? = nil
+    ) -> NSAttributedString? {
+        renderEmbed(target, embedDepth: 0, visited: [], contentWidth: contentWidth)
     }
 
     /// A filled circle inline bullet, as a text attachment so it sits vertically
@@ -1102,7 +1107,8 @@ final class OutlineEditorController: NSObject {
     /// Nested embeds resolve up to `maxEmbedDepth`; cycles (a target already in
     /// `visited`) and over-deep nesting return nil → rendered literally.
     private func renderEmbed(
-        _ target: EmbedTarget, embedDepth: Int, visited: Set<EmbedTarget>
+        _ target: EmbedTarget, embedDepth: Int, visited: Set<EmbedTarget>,
+        contentWidth: CGFloat?
     ) -> NSAttributedString? {
         guard embedDepth < 4, !visited.contains(target) else { return nil }
         let rootBlocks: [Block]
@@ -1118,18 +1124,7 @@ final class OutlineEditorController: NSObject {
             rootBlocks = blocks
             link = KnopoURL.page(name)
         }
-        // Nested embeds resolve through this context, with the chain tracked so
-        // cycles break instead of looping.
         let nextVisited = visited.union([target])
-        let inner = BlockRenderer.Context(
-            resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
-            assetsDir: app.store.assetsDir,
-            inlineQuoteBar: true,
-            resolveEmbed: { [weak self] t in
-                self?.renderEmbed(t, embedDepth: embedDepth + 1, visited: nextVisited)
-            },
-            tables: false // a transcluded table shows as its raw source (§5.2)
-        )
         let body = NSMutableAttributedString()
         var count = 0
         func walk(_ blocks: [Block], depth: Int) {
@@ -1148,11 +1143,32 @@ final class OutlineEditorController: NSObject {
                 body.append(NSAttributedString(string: indent,
                                                attributes: [.font: BlockRenderer.baseFont()]))
                 body.append(Self.embedBullet())
-                var blockContext = inner
+                let hang = bulletHangWidth(indent: indent)
+                let tableOrigin = Self.generatedRegionHorizontalPad + hang
+                let available = contentWidth.map {
+                    max(1, $0 - tableOrigin - Self.generatedRegionHorizontalPad)
+                }
+                var blockContext = BlockRenderer.Context(
+                    resolveBlockRef: { [weak app] id in
+                        app?.store.resolveBlock(id)?.block.content
+                    },
+                    assetsDir: app.store.assetsDir,
+                    inlineQuoteBar: true,
+                    resolveEmbed: { [weak self] t in
+                        self?.renderEmbed(
+                            t, embedDepth: embedDepth + 1, visited: nextVisited,
+                            contentWidth: available)
+                    },
+                    contentWidth: available,
+                    tableWidth: tableWidth(for: block)
+                )
                 blockContext.todoBlockID = block.id  // toggle the embedded block, not the source
-                body.append(BlockRenderer.render(content: block.content, context: blockContext))
+                let rendered = BlockRenderer.render(content: block.content, context: blockContext)
+                    .mutableCopy() as! NSMutableAttributedString
+                offsetTableLayout(rendered, by: tableOrigin)
+                body.append(rendered)
                 applyHangingIndent(body, range: NSRange(location: start, length: body.length - start),
-                                   hang: bulletHangWidth(indent: indent))
+                                   hang: hang)
                 if !block.collapsed { walk(block.children, depth: depth + 1) }
             }
         }
@@ -1162,6 +1178,33 @@ final class OutlineEditorController: NSObject {
         // a transclusion isn't cramped (matches the query-result treatment).
         finishRegion(body, linkAll: link, interlineSpacing: 6, lineSpacing: 4) // click → source
         return body
+    }
+
+    /// Moves a table's tab stops and drawn grid past the generated row's bullet.
+    /// The table renderer normally starts at the text container's leading edge.
+    private func offsetTableLayout(_ table: NSMutableAttributedString, by offset: CGFloat) {
+        guard table.length > 0, offset > 0 else { return }
+        let full = NSRange(location: 0, length: table.length)
+        table.enumerateAttribute(BlockRenderer.tableKey, in: full) { value, range, _ in
+            guard let geometry = value as? BlockRenderer.TableGeometry else { return }
+            table.addAttribute(
+                BlockRenderer.tableKey,
+                value: BlockRenderer.TableGeometry(
+                    columnEdges: geometry.columnEdges.map { $0 + offset },
+                    rowCount: geometry.rowCount
+                ),
+                range: range
+            )
+            table.enumerateAttribute(.paragraphStyle, in: range) { value, subrange, _ in
+                guard let style = (value as? NSParagraphStyle)?
+                    .mutableCopy() as? NSMutableParagraphStyle else { return }
+                style.tabStops = style.tabStops.map {
+                    NSTextTab(textAlignment: $0.alignment, location: $0.location + offset,
+                              options: $0.options)
+                }
+                table.addAttribute(.paragraphStyle, value: style, range: subrange)
+            }
+        }
     }
 
     /// Common finishing for a generated, read-only region (an embed's subtree or
@@ -1184,35 +1227,47 @@ final class OutlineEditorController: NSObject {
         BlockRenderer.pinLineHeightPerParagraph(body)
         let ns = body.string as NSString
         let firstBreak = ns.range(of: "\n").location
-        addParagraphSpacing(to: body, before: 8,
-                            range: NSRange(location: 0,
-                                           length: firstBreak == NSNotFound ? body.length : firstBreak))
-        let lastBreak = ns.range(of: "\n", options: .backwards).location
-        if lastBreak != NSNotFound {
-            addParagraphSpacing(to: body, after: 8,
-                                range: NSRange(location: lastBreak + 1,
-                                               length: body.length - lastBreak - 1))
-        } else {
-            addParagraphSpacing(to: body, after: 8, range: full)
+        let first = NSRange(location: 0,
+                            length: firstBreak == NSNotFound ? body.length : firstBreak)
+        if !containsTable(body, in: first) {
+            addParagraphSpacing(to: body, before: 8, range: first)
         }
-        let leftPad: CGFloat = 14, rightPad: CGFloat = 14
+        let lastBreak = ns.range(of: "\n", options: .backwards).location
+        let last = lastBreak == NSNotFound ? full
+            : NSRange(location: lastBreak + 1, length: body.length - lastBreak - 1)
+        if !containsTable(body, in: last) {
+            addParagraphSpacing(to: body, after: 8, range: last)
+        }
+        let leftPad = Self.generatedRegionHorizontalPad
+        let rightPad = Self.generatedRegionHorizontalPad
         body.enumerateAttribute(.paragraphStyle, in: full) { value, range, _ in
             let style = (value as? NSParagraphStyle)
                 .flatMap { $0.mutableCopy() as? NSMutableParagraphStyle } ?? NSMutableParagraphStyle()
             style.firstLineHeadIndent += leftPad
             style.headIndent += leftPad
             if style.tailIndent == 0 { style.tailIndent = -rightPad }
+            let isTable = containsTable(body, in: range)
             // Breathing room between rows (paragraphs) so a result list isn't
             // cramped; keeps the larger boundary spacing on the first/last line.
-            if interlineSpacing > 0 {
+            if interlineSpacing > 0, !isTable {
                 style.paragraphSpacing = max(style.paragraphSpacing, interlineSpacing)
             }
             // …and between the wrapped/hard-broken lines *within* one block.
-            if lineSpacing > 0 {
+            if lineSpacing > 0, !isTable {
                 style.lineSpacing = max(style.lineSpacing, lineSpacing)
             }
             body.addAttribute(.paragraphStyle, value: style, range: range)
         }
+    }
+
+    private static let generatedRegionHorizontalPad: CGFloat = 14
+
+    private func containsTable(_ text: NSAttributedString, in range: NSRange) -> Bool {
+        var found = false
+        text.enumerateAttribute(BlockRenderer.tableKey, in: range) { value, _, stop in
+            if value != nil { found = true; stop.pointee = true }
+        }
+        return found
     }
 
     /// Paints `url` as the click target across `range`, but leaves any TODO
@@ -1251,12 +1306,22 @@ final class OutlineEditorController: NSObject {
     /// region's left padding to both indents, keeping the offset.
     private func applyHangingIndent(_ text: NSMutableAttributedString, range: NSRange, hang: CGFloat) {
         guard range.length > 0 else { return }
-        let base = text.attribute(.paragraphStyle, at: range.location + range.length - 1,
-                                  effectiveRange: nil) as? NSParagraphStyle
-        let style = (base?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-        style.firstLineHeadIndent = 0
-        style.headIndent = hang
-        text.addAttribute(.paragraphStyle, value: style, range: range)
+        let ns = text.string as NSString
+        var offset = range.location
+        while offset < NSMaxRange(range) {
+            let paragraph = NSIntersectionRange(ns.paragraphRange(
+                for: NSRange(location: offset, length: 0)), range)
+            // Each table row has its own alignment stops. Copy only this
+            // paragraph's style, including it on the leading bullet.
+            let base = text.attribute(.paragraphStyle, at: NSMaxRange(paragraph) - 1,
+                                      effectiveRange: nil) as? NSParagraphStyle
+            let style = (base?.mutableCopy() as? NSMutableParagraphStyle)
+                ?? NSMutableParagraphStyle()
+            style.firstLineHeadIndent += offset == range.location ? 0 : hang
+            style.headIndent += hang
+            text.addAttribute(.paragraphStyle, value: style, range: paragraph)
+            offset = NSMaxRange(paragraph)
+        }
     }
 
     /// Read-only render of a `{{query …}}` expression's results (§17): matching
@@ -1345,17 +1410,19 @@ final class OutlineEditorController: NSObject {
         string.addAttribute(.paragraphStyle, value: base, range: range)
     }
 
+    private func tableWidth(for block: Block) -> BlockRenderer.TableWidth {
+        block.properties.first { $0.key == BlockRenderer.TableWidth.propertyKey }
+            .map { BlockRenderer.TableWidth(propertyValue: $0.value) } ?? .max
+    }
+
     /// Renders a block's content plus a dimmed `key:: value` area for its user
     /// properties, so properties are visible (and editable on focus) — §3.2.
     private func renderBlock(_ block: Block, contentWidth: CGFloat) -> NSAttributedString {
         // Tracked so a `{{query}}` can exclude its own host block from results.
         renderingBlockID = block.id
         defer { renderingBlockID = nil }
-        let tableWidth = block.properties
-            .first { $0.key == BlockRenderer.TableWidth.propertyKey }
-            .map { BlockRenderer.TableWidth(propertyValue: $0.value) } ?? .max
         let out = render(block.content, todoBlockID: block.id,
-                         contentWidth: contentWidth, tableWidth: tableWidth)
+                         contentWidth: contentWidth, tableWidth: tableWidth(for: block))
             .mutableCopy() as! NSMutableAttributedString
         let shown = block.properties.filter {
             !Block.hiddenPropertyKeys.contains($0.key)
@@ -1505,12 +1572,12 @@ final class OutlineEditorController: NSObject {
         tableView.invalidateIntrinsicContentSize()
     }
 
-    /// Re-renders the rows whose rendered form depends on the row width — tables,
-    /// whose columns are laid out to fit it (§5.2). Their cache entries went stale
-    /// with the width, so `cachedRender` re-runs them and leaves everything else
-    /// untouched.
+    /// Re-renders tables and embeds when their available width changes.
+    /// An embed can contain tables at any depth.
     private func rerenderWidthDependentRows() {
-        for index in rows.indices where BlockKind.classify(rows[index].block.content).isTable {
+        for index in rows.indices {
+            let content = rows[index].block.content
+            guard BlockKind.classify(content).isTable || content.contains("{{embed") else { continue }
             let rendered = cachedRender(rows[index].block, depth: rows[index].depth)
             guard rendered !== rows[index].rendered else { continue }
             rows[index].rendered = rendered

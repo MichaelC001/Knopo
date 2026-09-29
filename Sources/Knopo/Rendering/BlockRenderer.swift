@@ -40,7 +40,7 @@ enum BlockRenderer {
         var resolveQuery: (QueryExpr) -> NSAttributedString?
         /// Whether a table block renders as a laid-out table. False in the
         /// constrained contexts that show block content as a snippet — reference
-        /// lists, previews, embed/query results, SwiftUI `Text` — where a grid
+        /// lists, previews, query results, SwiftUI `Text` — where a grid
         /// has no room and nothing draws it; there the raw pipe source shows
         /// instead (SPEC §5.2).
         var tables = true

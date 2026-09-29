@@ -124,8 +124,8 @@ import KnopoCore
         #expect(rendered.attribute(.link, at: range.location, effectiveRange: nil) != nil)
     }
 
-    /// Where nothing can draw a grid (reference rows, previews, embeds), the raw
-    /// pipe source shows instead of a half-rendered table.
+    /// Where nothing can draw a grid, the raw pipe source shows instead of a
+    /// half-rendered table. This includes reference rows, previews, and queries.
     @Test func constrainedContextsShowRawSource() {
         let rendered = render(source, tables: false)
         #expect(rendered.string == source)

@@ -190,7 +190,7 @@ A focused table shows its raw source — there is no cell-level editing UX in v1
 
 **A table never exceeds the row either way** — it is fitted, not clipped. When the natural columns don't fit, the widest ones are capped until the table fits and narrow columns keep their width, so a `Qty` column stays legible instead of being squeezed to buy points for a paragraph-wide neighbour. A table with more columns than the row can seat trims its cell padding rather than overflow. Widths are recomputed as the window resizes.
 
-v1 limitation: a cell never wraps — an over-long one tail-truncates with an ellipsis at whatever width its column gets. Where there is no room to lay a grid out — reference and query-result rows, hover previews, `{{embed}}` transclusions — a table block shows its raw pipe source instead. Conversely, an `{{embed}}` or `{{query}}` *inside a cell* renders as the muted chip it does elsewhere, never as an expanded region: a cell is one line, and a multi-row result set has nowhere to go in it.
+v1 limitation: a cell never wraps — an over-long one tail-truncates with an ellipsis at whatever width its column gets. Where there is no room to lay a grid out — reference and query-result rows and hover previews — a table block shows its raw pipe source instead. Tables inside `{{embed}}` transclusions use the available width inside the generated region. Conversely, an `{{embed}}` or `{{query}}` *inside a cell* renders as the muted chip it does elsewhere, never as an expanded region: a cell is one line, and a multi-row result set has nowhere to go in it.
 
 ### 5.3 Explicitly unsupported
 
