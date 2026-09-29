@@ -41,9 +41,8 @@ final class OutlineRowCell: NSTableCellView {
     /// is amplified (slope 2.4 instead of 2) so block separation responds more
     /// strongly to the control than the raw multiplier would.
     static var verticalPadding: CGFloat { max(0, 2 + 2.4 * (BlockRenderer.density - 1)) }
-    /// Vertical text inset inside the content container — identical for the
-    /// rendered view and the shared editor so focusing a block never changes
-    /// its row height (bullets/lines must not shift).
+    /// Base text inset, shared with the editor. Rendered tables need extra
+    /// space for their rules and backgrounds.
     static let contentInsetV: CGFloat = 4
     static let minRowHeight: CGFloat = 24
 
@@ -380,7 +379,8 @@ final class OutlineRowCell: NSTableCellView {
         super.layout()
         let indent = CGFloat(depth) * Self.indentPerDepth
         // Center the bullet/fold on the first line's vertical midpoint.
-        let firstLineCenter = Self.verticalPadding + Self.contentInsetV + firstLineHeight / 2
+        let inset = renderedView.isHidden ? Self.contentInsetV : renderedView.textContainerInset.height
+        let firstLineCenter = Self.verticalPadding + inset + firstLineHeight / 2
         // Fold chevron and bullet sit in the gutter with offsets scaled by zoom,
         // so the whole gutter — and the bullet-to-text gap — grows with the text.
         let z = BlockRenderer.zoom
@@ -414,6 +414,12 @@ final class OutlineRowCell: NSTableCellView {
         )
         codeBackground.frame = boxFrame
         colorBackground.frame = boxFrame
+        if blockColor != nil, !renderedView.isHidden,
+           let grid = renderedView.tableGridRect() {
+            // Leave room for the rounded fill beyond all four grid corners.
+            let padded = container.convert(grid, from: renderedView).insetBy(dx: -2, dy: -2)
+            colorBackground.frame = boxFrame.union(padded)
+        }
         // The embed background hugs only the transcluded line fragments (so a
         // block mixing its own text with an embed greys just the embed), full
         // content width, with a couple px of vertical breathing room.
@@ -459,9 +465,10 @@ final class OutlineRowCell: NSTableCellView {
             view.textStorage?.setAttributedString(space)
         }
         guard let layoutManager = view.textLayoutManager else { return minRowHeight }
+        view.updateContentInsets()
         layoutManager.ensureLayout(for: layoutManager.documentRange)
         let textHeight = ceil(layoutManager.usageBoundsForTextContainer.height)
-        return max(minRowHeight, textHeight + contentInsetV * 2 + verticalPadding * 2)
+        return max(minRowHeight, textHeight + view.textContainerInset.height * 2 + verticalPadding * 2)
     }
 
     // MARK: - Hover preview (SPEC §6.1)
@@ -600,7 +607,7 @@ final class RenderedTextView: NSTextView {
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
-        // Matches the shared editor's inset so focusing doesn't shift rows.
+        // Ordinary text matches the editor. Tables add space when content changes.
         view.textContainerInset = NSSize(width: 0, height: OutlineRowCell.contentInsetV)
         view.textContainer?.lineFragmentPadding = 0
         view.textContainer?.widthTracksTextView = true
@@ -1011,9 +1018,28 @@ final class RenderedTextView: NSTextView {
     }
 
     func renderedContentDidChange() {
+        updateContentInsets()
         hoverImageIndex = nil
         updateResizeOverlay(hoverFrame: nil, preview: nil)
         window?.invalidateCursorRects(for: self)
+    }
+
+    /// Reserve space for table rules and rounded backgrounds inside the row.
+    /// Plain text and the raw-source editor keep their usual inset.
+    func updateContentInsets() {
+        var hasTable = false
+        if let storage = textStorage {
+            storage.enumerateAttribute(BlockRenderer.tableKey,
+                                       in: NSRange(location: 0, length: storage.length)) { value, _, stop in
+                if value != nil { hasTable = true; stop.pointee = true }
+            }
+        }
+        let inset = hasTable
+            ? max(OutlineRowCell.contentInsetV, BlockRenderer.tableRowPad + 3)
+            : OutlineRowCell.contentInsetV
+        if textContainerInset.height != inset {
+            textContainerInset = NSSize(width: 0, height: inset)
+        }
     }
 
     override func resetCursorRects() {
