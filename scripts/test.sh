@@ -27,4 +27,6 @@ for f in Localization/**/*.(strings|stringsdict)(N); do
   plutil -lint "$f" >/dev/null || { echo "malformed: $f" >&2; exit 1; }
 done
 
-exec swift test "${CLT_FLAGS[@]}" "$@"
+# AppKit tests share the main thread and application state. Concurrent cases
+# can delay highlight checks until their animations have already finished.
+exec swift test --no-parallel "${CLT_FLAGS[@]}" "$@"
