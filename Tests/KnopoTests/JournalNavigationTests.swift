@@ -78,7 +78,7 @@ import KnopoCore
     /// Opening a search hit is a reading action, today's journal included. Its
     /// automatic writing focus must not replace the reveal.
     @Test(arguments: [0, -1])
-    func searchResultKeepsTheJournalBlockHighlighted(dayOffset: Int) async throws {
+    func searchResultRevealsTheJournalBlockWithoutTakingFocus(dayOffset: Int) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-journal-search-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -105,17 +105,73 @@ import KnopoCore
             window.layoutIfNeeded()
             try await Task.sleep(for: .milliseconds(30))
         }
+        let table = try #require(descendants(host, of: OutlineTableView.self).first)
+        let controller = try #require(table.delegate as? OutlineEditorController)
+        let blockID = app.document(for: day).blocks[1].id
+        // Verify that the destination was flashed. The overlay may already have
+        // faded on a slow runner; BlockFlashTests cover the overlay itself.
+        #expect(controller.flashedBlockID == blockID)
+        #expect(table.visibleRect.intersects(table.rect(ofRow: 1)))
+        #expect(!(window.firstResponder is BlockEditorTextView))
+        #expect(app.document(for: day).blocks.count == 40)
+
+        // Check again after the flash's hold and fade have elapsed.
+        try await Task.sleep(for: .seconds(2))
         // A subsequent presentation must not belatedly take the caret either.
         app.dataVersion += 1
         window.layoutIfNeeded()
         try await Task.sleep(for: .milliseconds(60))
-        let table = try #require(descendants(host, of: OutlineTableView.self).first)
-        let cell = try #require(table.view(atColumn: 0, row: 1, makeIfNecessary: false)
-            as? OutlineRowCell)
-        #expect(cell.isFlashing)
+        #expect(controller.flashedBlockID == blockID)
         #expect(table.visibleRect.intersects(table.rect(ofRow: 1)))
         #expect(!(window.firstResponder is BlockEditorTextView))
         #expect(app.document(for: day).blocks.count == 40)
+    }
+
+    @Test func searchRevealSurvivesSlowWindowAttachment() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-slow-reveal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+        var doc = store.page(named: "Target")
+        doc.blocks = (0..<40).map { Block(content: "Entry \($0)") }
+        store.updatePage(doc)
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+        let target = doc.blocks[30]
+        nav.navigateToBlock(pageName: doc.name, blockID: target.id,
+                            content: target.content, inSidebar: false)
+        let controller = OutlineEditorController(app: app, nav: nav)
+
+        // Cold window construction can block the main thread before the
+        // deferred reveal runs. Exceed its old two-second deadline.
+        func presentSlowly() {
+            controller.present(pageName: doc.name, zoom: nil)
+            Thread.sleep(forTimeInterval: 2.1)
+        }
+        presentSlowly()
+        let table = controller.tableView
+        table.frame = NSRect(x: 0, y: 0, width: 700,
+                             height: table.intrinsicContentSize.height)
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 700, height: 450))
+        scroll.documentView = table
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = scroll
+        for _ in 0..<10 {
+            window.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        #expect(controller.flashedBlockID == target.id)
+        #expect(table.visibleRect.intersects(table.rect(ofRow: 30)))
+
+        // Once the reveal settles, later scrolling belongs to the reader.
+        try await Task.sleep(for: .seconds(2.1))
+        scroll.contentView.scroll(to: .zero)
+        table.onDidLayout?()
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(table.visibleRect.minY == 0)
+        #expect(!table.visibleRect.intersects(table.rect(ofRow: 30)))
     }
 
     /// Navigation in the whole window. The feed being left may already hold an
@@ -163,9 +219,9 @@ import KnopoCore
             let table = try #require(descendants(host, of: OutlineTableView.self).first {
                 ($0.delegate as? OutlineEditorController)?.pageName == day
             })
-            let cell = try #require(table.view(atColumn: 0, row: 1, makeIfNecessary: false)
-                as? OutlineRowCell)
-            #expect(cell.isFlashing, "Destination: \(day), starting in feed: \(startInFeed)")
+            let controller = try #require(table.delegate as? OutlineEditorController)
+            #expect(controller.flashedBlockID == app.document(for: day).blocks[1].id,
+                    "Destination: \(day), starting in feed: \(startInFeed)")
             #expect(table.visibleRect.intersects(table.rect(ofRow: 1)))
         }
     }

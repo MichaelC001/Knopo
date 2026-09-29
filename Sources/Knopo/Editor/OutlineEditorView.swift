@@ -292,9 +292,10 @@ final class OutlineEditorController: NSObject {
         let showsRunUp: Bool
         /// Where the row sat when it was last scrolled to; nil before the first.
         var rowMinY: CGFloat?
-        /// After this the layout is the user's again — an edit or a window resize
-        /// must not drag the view back to a block clicked seconds ago.
-        let until: TimeInterval
+        let settlingTime: TimeInterval
+        /// Starts when the outline reaches a window and can scroll. After this
+        /// deadline, edits and resizing must not pull the reader back.
+        var until: TimeInterval?
     }
 
     /// The part of a scrolling outline the reader can actually see: the visible rect
@@ -334,7 +335,7 @@ final class OutlineEditorController: NSObject {
     /// flash can be taken off when that cell is reused for another row, or when a
     /// later reveal lights a different one.
     private weak var flashedCell: OutlineRowCell?
-    private var flashedBlockID: UUID?
+    private(set) var flashedBlockID: UUID?
     /// Whether this outline is a right-sidebar pane. Panes are for reference: they
     /// never take focus on presentation, and a main outline may take focus from one
     /// (§5.4). Applied to the editor by `applyPaneRole`.
@@ -836,7 +837,7 @@ final class OutlineEditorController: NSObject {
     private func requestReveal(of blockID: UUID, flash: Bool = true,
                                runUp: Bool = false, within window: TimeInterval = 2) {
         revealRequest = Reveal(blockID: blockID, flashes: flash, showsRunUp: runUp,
-                               rowMinY: nil, until: CACurrentMediaTime() + window)
+                               rowMinY: nil, settlingTime: window, until: nil)
         revealIfPossible()
     }
 
@@ -855,11 +856,17 @@ final class OutlineEditorController: NSObject {
 
     private func revealNow() {
         guard let request = revealRequest else { return }
-        guard CACurrentMediaTime() < request.until else {
+        if let until = request.until, CACurrentMediaTime() >= until {
             revealRequest = nil
             return
         }
+        guard tableView.window != nil, let scroll = tableView.enclosingScrollView,
+              scroll.documentVisibleRect.width > 0,
+              scroll.documentVisibleRect.height > 0 else { return }
         guard let row = rows.firstIndex(where: { $0.block.id == request.blockID }) else { return }
+        if request.until == nil {
+            revealRequest?.until = CACurrentMediaTime() + request.settlingTime
+        }
         // Settled for now — but the request is kept until its window runs out: more
         // re-measures follow, and each can move the row out of view again.
         let topOverlap = tableView.enclosingScrollView?.contentInsets.top ?? 0
