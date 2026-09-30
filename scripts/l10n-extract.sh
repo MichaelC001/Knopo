@@ -78,7 +78,9 @@ fi
 rm -rf "$SCRATCH" "$DATA"
 mkdir -p "$DATA"
 echo "Extracting (full rebuild)…"
-swift build --scratch-path "$SCRATCH" \
+# The native build system: from Swift 6.4 the default one ignores
+# -emit-localized-strings-path for this package's own targets.
+swift build --build-system native --scratch-path "$SCRATCH" \
   -Xswiftc -emit-localized-strings \
   -Xswiftc -emit-localized-strings-path -Xswiftc "$DATA" >/dev/null
 
