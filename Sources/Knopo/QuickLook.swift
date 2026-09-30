@@ -1,8 +1,8 @@
 import AppKit
 import Quartz
 
-/// Shows a file in the system Quick Look panel. A PDF shows every page there,
-/// scrollable and zoomable, with a button to open it in Preview.
+/// Shows files in the system Quick Look panel. A PDF shows every page there.
+/// Several files step with the arrow keys, as in Finder.
 ///
 /// The panel finds its controller through the key window's responder chain.
 /// Knopo has no app delegate or window controller to take that role. So this
@@ -14,12 +14,23 @@ final class QuickLook: NSResponder, QLPreviewPanelDataSource, QLPreviewPanelDele
     private var files: [URL] = []
     private weak var window: NSWindow?
 
-    static func show(_ file: URL, from window: NSWindow?) {
-        shared.show(file, from: window)
+    static func show(_ files: [URL], from window: NSWindow?) {
+        shared.show(files, from: window)
     }
 
-    private func show(_ file: URL, from window: NSWindow?) {
-        files = [file]
+    /// Opens the panel, or closes it if open. Like Space in Finder.
+    static func toggle(_ files: [URL], from window: NSWindow?) {
+        if QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
+           panel.isVisible {
+            panel.orderOut(nil)
+        } else {
+            show(files, from: window)
+        }
+    }
+
+    private func show(_ files: [URL], from window: NSWindow?) {
+        guard !files.isEmpty else { return }
+        self.files = files
         if let window, window !== self.window {
             leaveChain()
             nextResponder = window.nextResponder
@@ -29,6 +40,7 @@ final class QuickLook: NSResponder, QLPreviewPanelDataSource, QLPreviewPanelDele
         guard let panel = QLPreviewPanel.shared() else { return }
         if panel.isVisible {
             panel.reloadData()
+            panel.currentPreviewItemIndex = 0
         } else {
             panel.makeKeyAndOrderFront(nil)
         }

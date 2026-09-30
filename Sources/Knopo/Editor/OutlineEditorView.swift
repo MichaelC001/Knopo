@@ -1797,6 +1797,9 @@ final class OutlineEditorController: NSObject {
             guard hasSelection else { return false }
             clearSelection()
             return true
+        case 49 where flags.isEmpty: // Space → Quick Look
+            guard hasSelection else { return false }
+            return quickLookSelection()
         case 7 where flags.contains(.command): // Cmd+X
             guard hasSelection else { return false }
             cutSelection()
@@ -2524,7 +2527,41 @@ final class OutlineEditorController: NSObject {
 
     @objc private func quickLookFile(_ sender: NSMenuItem) {
         guard let file = sender.representedObject as? URL else { return }
-        QuickLook.show(file, from: tableView.window)
+        QuickLook.show([file], from: tableView.window)
+    }
+
+    /// Opens or closes Quick Look. Tests replace it: no panel opens under `swift test`.
+    var toggleQuickLook: ([URL], NSWindow?) -> Void = { QuickLook.toggle($0, from: $1) }
+
+    /// Space on selected blocks, as in Finder. Unhandled when there is nothing to preview.
+    private func quickLookSelection() -> Bool {
+        let files = Self.previewFiles(in: selectedRows.sorted().compactMap {
+            rows.indices.contains($0) ? rows[$0].rendered : nil
+        })
+        guard !files.isEmpty else { return false }
+        toggleQuickLook(files, tableView.window)
+        return true
+    }
+
+    /// Image and PDF files in rendered blocks, in order, each once. Taken from
+    /// the render, so only existing files count. Embedded images are skipped.
+    static func previewFiles(in rendered: [NSAttributedString]) -> [URL] {
+        var files: [URL] = []
+        for text in rendered {
+            // By index, which is unique per image. Adjacent copies of one file
+            // share a file-attribute run.
+            text.enumerateAttribute(
+                BlockRenderer.imageIndexKey, in: NSRange(location: 0, length: text.length)
+            ) { value, range, _ in
+                guard value != nil,
+                      text.attribute(.embedRegion, at: range.location, effectiveRange: nil) == nil,
+                      let file = text.attribute(
+                        BlockRenderer.imageFileKey, at: range.location, effectiveRange: nil) as? URL,
+                      !files.contains(file) else { return }
+                files.append(file)
+            }
+        }
+        return files
     }
 
     @objc private func openFileInDefaultApp(_ sender: NSMenuItem) {
