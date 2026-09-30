@@ -1232,7 +1232,7 @@ enum BlockRenderer {
         let url: URL? = src.hasPrefix("http")
             ? URL(string: src)
             : context.assetsDir?.appendingPathComponent(src).standardized
-        if let url, url.isFileURL, let image = NSImage(contentsOf: url) {
+        if let url, url.isFileURL, let image = ImageCache.image(at: url) {
             let attachment = NSTextAttachment()
             attachment.image = image
             let natural = NSSize(width: max(image.size.width, 1), height: max(image.size.height, 1))
