@@ -911,6 +911,28 @@ final class RenderedTextView: NSTextView {
         imageHit(at: point) { $0.contains(point) }
     }
 
+    /// The file of the image under `point`, for the context menu. Unlike resizing,
+    /// this includes images inside an embed.
+    func imageFile(at point: NSPoint) -> URL? {
+        guard let storage = textStorage, storage.length > 0 else { return nil }
+        var found: URL?
+        storage.enumerateAttribute(
+            BlockRenderer.imageFileKey,
+            in: NSRange(location: 0, length: storage.length)
+        ) { value, range, stop in
+            guard let url = value as? URL else { return }
+            // Adjacent images of the same file share one run, so check each
+            // attachment in it, not just the first.
+            for index in range.location..<NSMaxRange(range) {
+                guard let frame = imageFrame(at: index), frame.contains(point) else { continue }
+                found = url
+                stop.pointee = true
+                return
+            }
+        }
+        return found
+    }
+
     /// Finds attachments by their rendered frames instead of asking TextKit for
     /// an insertion index. At attachment edges that index can alternate between
     /// the image and the neighboring character, making a small resize handle

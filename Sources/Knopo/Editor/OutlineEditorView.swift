@@ -2416,6 +2416,11 @@ final class OutlineEditorController: NSObject {
             return
         }
         let menu = NSMenu()
+        if let rendered = view as? RenderedTextView,
+           let file = rendered.imageFile(at: rendered.convert(event.locationInWindow, from: nil)) {
+            addImageFileItems(file, to: menu)
+            menu.addItem(.separator())
+        }
         let copyRef = NSMenuItem(
             title: L("Copy Block Reference"), action: #selector(copyBlockRef(_:)), keyEquivalent: ""
         )
@@ -2500,6 +2505,37 @@ final class OutlineEditorController: NSObject {
 
     @objc private func copySelectionAction() { copySelection() }
     @objc private func deleteSelectionAction() { deleteSelection() }
+
+    /// Items for the file behind a right-clicked image or PDF. A click on it
+    /// edits the block, so the menu is the way to see the file itself.
+    func addImageFileItems(_ file: URL, to menu: NSMenu) {
+        let items: [(String, Selector)] = [
+            (L("Quick Look"), #selector(quickLookFile(_:))),
+            (L("Open in Default App"), #selector(openFileInDefaultApp(_:))),
+            (L("Reveal in Finder"), #selector(revealFileInFinder(_:))),
+        ]
+        for (title, action) in items {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = file
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func quickLookFile(_ sender: NSMenuItem) {
+        guard let file = sender.representedObject as? URL else { return }
+        QuickLook.show(file, from: tableView.window)
+    }
+
+    @objc private func openFileInDefaultApp(_ sender: NSMenuItem) {
+        guard let file = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(file)
+    }
+
+    @objc private func revealFileInFinder(_ sender: NSMenuItem) {
+        guard let file = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([file])
+    }
 
     @objc private func copyBlockRef(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }

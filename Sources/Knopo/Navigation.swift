@@ -269,6 +269,21 @@ extension NSAlert {
 /// menu, so the delete/rename flows have a single source of truth (SPEC §13).
 @MainActor
 enum PageActions {
+    /// The page's file on disk, or nil for a stub that has none yet. Uses the
+    /// loaded name, which is the file's: a journal referenced as `2026-06-10`
+    /// lives in `2026_06_10.md`.
+    static func file(of name: String, app: AppState) -> URL? {
+        let doc = app.document(for: name)
+        guard doc.fileExists else { return nil }
+        let url = app.store.fileURL(forPageNamed: doc.name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    static func revealInFinder(_ name: String, app: AppState) {
+        guard let url = file(of: name, app: app) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     /// Aggregates incoming block-ref counts for the whole page, confirms, then
     /// trashes the file (SPEC §7.4, §13).
     static func confirmDelete(_ name: String, app: AppState, nav: Navigator) {

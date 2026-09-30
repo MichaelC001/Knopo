@@ -263,6 +263,8 @@ enum BlockRenderer {
     /// Ordinal of an image token within one top-level block render. Attached to
     /// the object-replacement character so the row view can rewrite its source.
     static let imageIndexKey = NSAttributedString.Key("knopoImageIndex")
+    /// The file a rendered image was loaded from, for its context menu.
+    static let imageFileKey = NSAttributedString.Key("knopoImageFile")
     /// Source offset (UTF-16, into the block's content) that a rendered run came
     /// from, so a click in rendered text can be mapped back to the source the
     /// editor shows. Absent where the mapping isn't tracked (fences, tables,
@@ -1255,8 +1257,8 @@ enum BlockRenderer {
             }
             attachment.bounds = CGRect(origin: .zero, size: boundsSize)
             let rendered = NSMutableAttributedString(attachment: attachment)
-            rendered.addAttribute(
-                imageIndexKey, value: imageIndex,
+            rendered.addAttributes(
+                [imageIndexKey: imageIndex, imageFileKey: url],
                 range: NSRange(location: 0, length: rendered.length)
             )
             out.append(rendered)

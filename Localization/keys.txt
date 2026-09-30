@@ -101,6 +101,7 @@ OK
 Open Graph
 Open Graph…
 Open day page (shows linked references)
+Open in Default App
 Open in Main View
 Open in Sidebar
 Orange	Block background color
@@ -111,6 +112,7 @@ Place {ordinal} immediately after d.	Custom journal date pattern. {ordinal} and 
 Previous (⇧⌘G) / Next (⌘G)
 Previous match
 Purple	Block background color
+Quick Look
 Rebuild Index
 Rebuilding…
 Recents
@@ -123,6 +125,7 @@ Rename Page…
 Rename Tag
 Rename Tag…
 Reset Line Spacing
+Reveal in Finder
 Search
 Search Index
 Search pages and blocks…

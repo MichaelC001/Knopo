@@ -140,6 +140,8 @@ struct RightSidebar: View {
             app.toggleFavourite(name)
         }
         Button("Open in Main View") { nav.navigate(to: .page(name: name)) }
+        Button("Reveal in Finder") { PageActions.revealInFinder(name, app: app) }
+            .disabled(PageActions.file(of: name, app: app) == nil)
         Divider()
         Button("Rename Page…") { PageActions.promptRename(name, nav: nav) }
             .disabled(app.document(for: name).isJournal)
