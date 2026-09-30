@@ -780,7 +780,7 @@ final class BlockEditorTextView: NSTextView {
                  fontStyle: .mono),
             rule("(?<!\\\\)\\[[^\\]\\n]*\\]\\([^)\\n]*\\)", [.foregroundColor: NSColor.linkColor]),
             rule("(?<!\\\\)\\[\\[[^\\[\\]\\n]+\\]\\]",
-                 [.foregroundColor: NSColor.controlAccentColor]),
+                 [.foregroundColor: NSColor.linkColor]),
             rule("(?<!\\\\)\\(\\([0-9a-fA-F-]{36}\\)\\)",
                  [.foregroundColor: NSColor.systemTeal,
                   .underlineStyle: NSUnderlineStyle.single.rawValue

@@ -56,7 +56,7 @@ struct ReferencesSection: View {
                                 .foregroundStyle(.tertiary)
                             Text(app.displayTitle(for: sourcePage))
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(Color(nsColor: .linkColor))
                         }
                     }
                     .buttonStyle(.plain)

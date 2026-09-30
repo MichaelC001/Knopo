@@ -3,9 +3,8 @@ import KnopoCore
 
 /// Left sidebar: Journal (home), Favourites, Recents, Tags, All Pages (SPEC §12).
 ///
-/// Selection is drawn as the unemphasized rounded pill first-party sidebars
-/// use (grey background, accent label) and is tracked per row — selecting a
-/// page in Favourites does not also highlight it in Recents.
+/// Selection uses a grey rounded pill with a normal label, tracked per row.
+/// Selecting a page in Favourites does not also highlight it in Recents.
 struct Sidebar: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var nav: Navigator
@@ -165,7 +164,7 @@ struct Sidebar: View {
             }
         } label: {
             content()
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                .foregroundStyle(Color.primary)
                 .padding(.horizontal, 7)
                 // Standard macOS sidebar row height (Photos/Music): 28 pt,
                 // pill filling the full row.

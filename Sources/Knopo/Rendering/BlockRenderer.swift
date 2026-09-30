@@ -1129,7 +1129,7 @@ enum BlockRenderer {
                 // shows as "Jun 10th, 2026" but stays ISO in the file.
                 let display = pageRefDisplay(name, context: context)
                 let link = KnopoURL.page(name)
-                let nameAttrs = attrs([.link: link, .foregroundColor: NSColor.controlAccentColor])
+                let nameAttrs = attrs([.link: link, .foregroundColor: NSColor.linkColor])
                 if context.pageRefBrackets {
                     // Optional Logseq-style faint brackets (aesthetic, §settings).
                     let bracketAttrs = attrs([.link: link,
@@ -1148,7 +1148,7 @@ enum BlockRenderer {
                         .link: KnopoURL.block(id),
                         .underlineStyle: NSUnderlineStyle.single.rawValue
                             | NSUnderlineStyle.patternDot.rawValue,
-                        .underlineColor: NSColor.controlAccentColor,
+                        .underlineColor: NSColor.linkColor,
                     ])))
                 } else {
                     // Broken reference: render literally, never rewrite (§7.3).
