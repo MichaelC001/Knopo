@@ -198,7 +198,8 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         onDragExited?()
-        super.draggingEnded(sender)
+        // NSTableView does not implement this optional callback. Calling super
+        // throws and prevents AppKit from finishing the drag session.
     }
 
     override func keyDown(with event: NSEvent) {
@@ -379,6 +380,10 @@ final class OutlineEditorController: NSObject {
     /// alone (same page), so ids never round-trip through the pasteboard.
     static let blockDragType = NSPasteboard.PasteboardType("com.knopo.block-drag")
     private var draggingIDs: [UUID] = []
+    /// Wait until the drop or paste finishes before opening a modal alert.
+    var presentAssetImportAlert: (NSAlert) -> Void = { alert in
+        DispatchQueue.main.async { alert.runModal() }
+    }
     /// Spring-loading (Finder-style): a drag hovering over a collapsed row for
     /// a moment expands it, so the drop can land *inside*. The pending target
     /// is tracked by block id (row indices shift when rows expand).
@@ -514,7 +519,7 @@ final class OutlineEditorController: NSObject {
             self.suppressFocusLoss = false
             self.tableView.window?.makeFirstResponder(self.editor)
             guard response == .OK,
-                  let markdown = self.editorImportImageAssets(panel.urls) else { return }
+                  let markdown = self.editorImportAssets(panel.urls) else { return }
             let loc = min(caret, (self.editor.string as NSString).length)
             self.editor.setSelectedRange(NSRange(location: loc, length: 0))
             self.editor.insertText(markdown,
@@ -2161,11 +2166,11 @@ final class OutlineEditorController: NSObject {
         springBlockID = nil
     }
 
-    private func imageFileURLs(from pasteboard: NSPasteboard) -> [URL]? {
+    static func assetFileURLs(from pasteboard: NSPasteboard) -> [URL]? {
         let urls = pasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
         )?.compactMap { ($0 as? NSURL).map { $0 as URL } }
-            .filter(GraphStore.isImageFile) ?? []
+            .filter(GraphStore.isPreviewAssetFile) ?? []
         return urls.isEmpty ? nil : urls
     }
 
@@ -2860,7 +2865,7 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             return .move
         }
         let doc = app.document(for: pageName)
-        guard imageFileURLs(from: info.draggingPasteboard) != nil,
+        guard Self.assetFileURLs(from: info.draggingPasteboard) != nil,
               insertionPath(row: row, operation: operation, in: doc) != nil else {
             updateSpringLoad(row: -1, operation: .above)
             return []
@@ -2873,30 +2878,8 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
                    row: Int, dropOperation operation: NSTableView.DropOperation) -> Bool {
         cancelSpringLoad()
         if (info.draggingSource as? OutlineEditorController) !== self {
-            guard let fileURLs = imageFileURLs(from: info.draggingPasteboard) else { return false }
-            var doc = app.document(for: pageName)
-            guard let dest = insertionPath(row: row, operation: operation, in: doc) else {
-                return false
-            }
-            let blocks = fileURLs.compactMap { url -> Block? in
-                guard let name = try? app.store.importAsset(from: url) else { return nil }
-                return Block(content: GraphStore.imageMarkdown(assetNamed: name))
-            }
-            guard !blocks.isEmpty else { return false }
-            for (offset, block) in blocks.enumerated() {
-                var path = dest
-                path[path.count - 1] += offset
-                doc.blocks.insert(block, at: path)
-            }
-            // Dropping into a collapsed parent: expand it so the result is visible.
-            if operation == .on, rows.indices.contains(row),
-               let parentPath = doc.blocks.path(to: rows[row].block.id) {
-                doc.blocks.update(at: parentPath) { $0.collapsed = false }
-            }
-            commitStructural(doc, label: blocks.count == 1 ? "Insert Image" : "Insert Images")
-            clearSelection()
-            reloadAndFocus(nil, selection: nil)
-            return true
+            guard let fileURLs = Self.assetFileURLs(from: info.draggingPasteboard) else { return false }
+            return importDroppedAssets(fileURLs, row: row, operation: operation)
         }
 
         guard let dest = dropDestination(row: row, operation: operation) else { return false }
@@ -2915,6 +2898,31 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
         reloadAndFocus(nil, selection: nil)
         let newSelection = Set(rows.indices.filter { movedIDs.contains(rows[$0].block.id) })
         if !newSelection.isEmpty { setSelection(newSelection, anchor: newSelection.min()) }
+        return true
+    }
+
+    func importDroppedAssets(_ fileURLs: [URL], row: Int,
+                             operation: NSTableView.DropOperation) -> Bool {
+        var doc = app.document(for: pageName)
+        guard let dest = insertionPath(row: row, operation: operation, in: doc) else {
+            return false
+        }
+        let blocks = importAssetMarkdown(fileURLs.filter(GraphStore.isPreviewAssetFile))
+            .map { Block(content: $0) }
+        guard !blocks.isEmpty else { return false }
+        for (offset, block) in blocks.enumerated() {
+            var path = dest
+            path[path.count - 1] += offset
+            doc.blocks.insert(block, at: path)
+        }
+        // Expand the parent so the imported blocks are visible.
+        if operation == .on, rows.indices.contains(row),
+           let parentPath = doc.blocks.path(to: rows[row].block.id) {
+            doc.blocks.update(at: parentPath) { $0.collapsed = false }
+        }
+        commitStructural(doc, label: blocks.count == 1 ? "Insert File" : "Insert Files")
+        clearSelection()
+        reloadAndFocus(nil, selection: nil)
         return true
     }
 }
@@ -3143,13 +3151,41 @@ extension OutlineEditorController: BlockEditorActions {
         app.dataVersion += 1
     }
 
-    func editorImportImageAssets(_ fileURLs: [URL]) -> String? {
-        let markdown = fileURLs.compactMap { url -> String? in
-            guard GraphStore.isImageFile(url),
-                  let name = try? app.store.importAsset(from: url) else { return nil }
-            return GraphStore.imageMarkdown(assetNamed: name)
-        }
+    func editorImportAssets(_ fileURLs: [URL]) -> String? {
+        let markdown = importAssetMarkdown(fileURLs.filter(GraphStore.isPreviewAssetFile))
         return markdown.isEmpty ? nil : markdown.joined(separator: " ")
+    }
+
+    private func importAssetMarkdown(_ fileURLs: [URL]) -> [String] {
+        var failures: [String] = []
+        let markdown = fileURLs.compactMap { url -> String? in
+            do {
+                let name = try app.store.importAsset(from: url)
+                return GraphStore.imageMarkdown(assetNamed: name)
+            } catch {
+                let reason = NSAlert(for: error).messageText
+                if reason.contains(url.lastPathComponent) {
+                    failures.append(reason)
+                } else {
+                    failures.append(String(localized: "\(url.lastPathComponent): \(reason)",
+                                           comment: "Failed asset import; filename followed by the error description"))
+                }
+                return nil
+            }
+        }
+        showAssetImportFailures(failures)
+        return markdown
+    }
+
+    private func showAssetImportFailures(_ failures: [String]) {
+        guard !failures.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "Some files could not be imported.",
+                                   comment: "Alert title after failed image or PDF imports")
+        alert.informativeText = failures.joined(separator: "\n\n")
+        alert.addButton(withTitle: L("OK"))
+        presentAssetImportAlert(alert)
     }
 
     func editorImportPastedImage(png data: Data) -> String? {
@@ -3157,10 +3193,13 @@ extension OutlineEditorController: BlockEditorActions {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let preferredName = "pasted-\(formatter.string(from: Date())).png"
-        guard let name = try? app.store.saveAsset(data, preferredName: preferredName) else {
+        do {
+            let name = try app.store.saveAsset(data, preferredName: preferredName)
+            return GraphStore.imageMarkdown(assetNamed: name, alt: "image")
+        } catch {
+            showAssetImportFailures([NSAlert(for: error).messageText])
             return nil
         }
-        return GraphStore.imageMarkdown(assetNamed: name, alt: "image")
     }
 
     func editorFocusLost() {

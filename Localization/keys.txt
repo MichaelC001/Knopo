@@ -8,6 +8,7 @@ Heavy	Body font weight
 Light	Body font weight
 Medium	Body font weight
 [Localizable]
+%@: %@	Failed asset import; filename followed by the error description
 %lld blocks
 %lld blocks are referenced in %lld places. Delete anyway?	Delete-block confirmation; both counts are pluralized
 %lld of %lld	Find bar: which match of how many is selected
@@ -132,6 +133,7 @@ Search pages and blocks…
 Select All
 Settings
 Show brackets around page links
+Some files could not be imported.	Alert title after failed image or PDF imports
 Start typing, or / for commands	Placeholder in the only, empty block of a page
 System	Appearance theme
 Tag view — generated, read-only. Tags are labels, not pages.
@@ -170,6 +172,8 @@ live query
 pick a date
 showing %lld of %lld	Query result footer: how many of the matches are listed
 stub
+“%@” exceeds the %lld MB import limit.	Asset import error; filename and maximum size in decimal megabytes
+“%@” is not a regular file.	Asset import error; folders cannot be imported as images or PDFs
 ⧉ query	Placeholder chip for a query that cannot run here
 [Localizable:plurals]
 %lld blocks

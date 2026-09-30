@@ -22,7 +22,7 @@ protocol BlockEditorActions: AnyObject {
     func editorCopySubtreeMarkdown() -> String?
     func editorPasteBlocks(_ text: String)
     func editorPersistPastedBlockReference(_ id: UUID)
-    func editorImportImageAssets(_ fileURLs: [URL]) -> String?
+    func editorImportAssets(_ fileURLs: [URL]) -> String?
     func editorImportPastedImage(png data: Data) -> String?
     func editorFocusLost()
 }
@@ -146,7 +146,7 @@ final class BlockEditorTextView: NSTextView {
         needsDisplay = true
     }
 
-    /// Keep file drops on the outline table, which inserts each image as a new
+    /// Keep file drops on the outline table, which inserts each image or PDF as a new
     /// block at the drop point. Ordinary string drags still edit this block.
     override func updateDragTypeRegistration() {
         registerForDraggedTypes([.string])
@@ -622,16 +622,16 @@ final class BlockEditorTextView: NSTextView {
         super.pasteAsPlainText(sender)
     }
 
-    /// Handles Knopo's structured/image clipboard forms. Returns false for an
+    /// Handles Knopo's structured and asset clipboard forms. Returns false for an
     /// ordinary single-line string so AppKit can perform its normal paste.
-    private func pasteKnopoContent() -> Bool {
-        let pasteboard = NSPasteboard.general
+    func pasteKnopoContent(from pasteboard: NSPasteboard = .general) -> Bool {
         let fileURLs = pasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
         )?.compactMap { ($0 as? NSURL).map { $0 as URL } } ?? []
-        if !fileURLs.isEmpty,
-           let markdown = actions?.editorImportImageAssets(fileURLs) {
-            insertText(markdown, replacementRange: selectedRange())
+        if fileURLs.contains(where: GraphStore.isPreviewAssetFile), let actions {
+            if let markdown = actions.editorImportAssets(fileURLs) {
+                insertText(markdown, replacementRange: selectedRange())
+            }
             return true
         }
         // Inside a code block, multi-line text stays in the block verbatim —
@@ -677,8 +677,10 @@ final class BlockEditorTextView: NSTextView {
             } else {
                 png = nil
             }
-            if let png, let markdown = actions?.editorImportPastedImage(png: png) {
-                insertText(markdown, replacementRange: selectedRange())
+            if let png, let actions {
+                if let markdown = actions.editorImportPastedImage(png: png) {
+                    insertText(markdown, replacementRange: selectedRange())
+                }
                 return true
             }
         }

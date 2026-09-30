@@ -249,6 +249,17 @@ extension NSAlert {
     }
 
     private static func message(for error: Error) -> String {
+        if let error = error as? AssetImportError {
+            switch error {
+            case .fileTooLarge(let name, let maximumBytes):
+                let megabytes = maximumBytes / 1_000_000
+                return String(localized: "“\(name)” exceeds the \(megabytes) MB import limit.",
+                              comment: "Asset import error; filename and maximum size in decimal megabytes")
+            case .notRegularFile(let name):
+                return String(localized: "“\(name)” is not a regular file.",
+                              comment: "Asset import error; folders cannot be imported as images or PDFs")
+            }
+        }
         switch error as? GraphError {
         case .invalidPageName(let name):
             return String(localized: "Invalid page name: “\(name)”",
