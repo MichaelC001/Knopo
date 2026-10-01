@@ -2,6 +2,27 @@
 
 Notable changes per release, newest first. Dates are release dates.
 
+## v0.8.0 (2026-10-01)
+
+PDF imports and Quick Look, with embedded tables and editing refinements.
+
+**New**
+- Drag or paste PDFs from Finder to add them to your notes with a first-page preview.
+- Right-click an image or PDF preview to use Quick Look, open it in its default app, or reveal it in Finder. Pages also have a Reveal in Finder action.
+- Select blocks and press `Space` to preview their images and PDFs in Quick Look.
+- Tables now display properly inside page and block embeds.
+
+**Improved**
+- Images and PDF previews use less memory when the same file appears in several places.
+- Pasting a copied page or block reference into an embed placeholder fills it without doubling the brackets.
+- Links and sidebar text are easier to read in dark mode.
+
+**Fixes**
+- Drag and drop keeps working after the first drop.
+- Importing a symlink copies the file's contents into the graph instead of leaving a link to an outside file.
+- Tabs keep the correct labels when several graphs share a window.
+- Table borders and colored backgrounds have enough padding to avoid clipping.
+
 ## v0.7.0 (2026-09-14)
 
 Settings and journal dates, with smoother search, tabs and link previews.
