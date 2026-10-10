@@ -16,6 +16,11 @@ final class Navigator: ObservableObject {
     }
     @Published var searchPresented = false
 
+    /// Reopening the first pane must reveal it even when the pane list is unchanged.
+    @Published private(set) var rightPaneRevealToken = 0
+    /// Every sidebar open cancels older block reveals, including another block result.
+    private(set) var rightPaneNavigationToken = 0
+
     /// Page name whose first block the outline should focus once it loads — set
     /// right after creating a page so you can start typing immediately. The
     /// editor consumes (clears) it when it matches the page it just loaded.
@@ -123,8 +128,10 @@ final class Navigator: ObservableObject {
     /// moves back to the top and expands rather than opening a second identical
     /// card: the sidebar is a set of reference views, and two editors over one
     /// document would alias.
-    func openInRightSidebar(_ target: NavTarget) {
+    func openInRightSidebar(_ target: NavTarget, reveal: Bool = true) {
         guard let resolved = resolve(target) else { return }
+        rightPaneNavigationToken += 1
+        defer { if reveal { rightPaneRevealToken += 1 } }
         guard let i = rightPanes.firstIndex(where: { $0.target.showsSame(as: resolved) }) else {
             rightPanes.insert(RightPane(target: resolved), at: 0) // newest on top
             return
@@ -136,6 +143,12 @@ final class Navigator: ObservableObject {
         pane.collapsed = false   // re-opening a collapsed card reveals it
         moved.insert(pane, at: 0)
         if moved != rightPanes { rightPanes = moved }
+    }
+
+    /// A missing block falls back to the pane header after the view update finishes.
+    func revealRightPane(ifCurrent token: Int) {
+        guard token == rightPaneNavigationToken, !rightPanes.isEmpty else { return }
+        rightPaneRevealToken += 1
     }
 
     /// Open the page holding a block (full page, in context — not zoomed) and
@@ -151,7 +164,8 @@ final class Navigator: ObservableObject {
             position: position, inSidebar: inSidebar)
         highlightToken += 1
         let target = NavTarget.page(name: pageName)
-        inSidebar ? openInRightSidebar(target) : navigate(to: target)
+        // A block result scrolls to its block, rather than the card header.
+        inSidebar ? openInRightSidebar(target, reveal: false) : navigate(to: target)
     }
 
     /// Spends the pending scroll-to/flash request — called by the outline that

@@ -345,6 +345,7 @@ final class OutlineEditorController: NSObject {
     /// past which the layout is the user's again.
     private struct Reveal {
         let blockID: UUID
+        let rightPaneNavigationToken: Int
         /// Whether to flash the row on arrival - a caret is its own answer.
         let flashes: Bool
         /// Whether to bring what precedes the row along with it: a caret to write
@@ -893,7 +894,15 @@ final class OutlineEditorController: NSObject {
                 HighlightCandidate(id: $0.block.id, path: $0.path, content: $0.block.content)
             },
             pathAtPosition: { app.document(for: pageName).blocks.path(atPreorderPosition: $0) }
-        ) else { return }
+        ) else {
+            if inPane {
+                let token = nav.rightPaneNavigationToken
+                DispatchQueue.main.async { [weak self] in
+                    self?.nav.revealRightPane(ifCurrent: token)
+                }
+            }
+            return
+        }
         // There is something to reveal, so this is a reading visit. Today's
         // journal must not replace it with its automatic writing focus, now or
         // on a later pass.
@@ -906,7 +915,8 @@ final class OutlineEditorController: NSObject {
     /// layout settles.
     private func requestReveal(of blockID: UUID, flash: Bool = true,
                                runUp: Bool = false, within window: TimeInterval = 2) {
-        revealRequest = Reveal(blockID: blockID, flashes: flash, showsRunUp: runUp,
+        revealRequest = Reveal(blockID: blockID, rightPaneNavigationToken: nav.rightPaneNavigationToken,
+                               flashes: flash, showsRunUp: runUp,
                                rowMinY: nil, settlingTime: window, until: nil)
         revealIfPossible()
     }
@@ -926,6 +936,11 @@ final class OutlineEditorController: NSObject {
 
     private func revealNow() {
         guard let request = revealRequest else { return }
+        // Opening a pane supersedes any block reveal still settling in the sidebar.
+        if inPane, request.rightPaneNavigationToken != nav.rightPaneNavigationToken {
+            revealRequest = nil
+            return
+        }
         if let until = request.until, CACurrentMediaTime() >= until {
             revealRequest = nil
             return

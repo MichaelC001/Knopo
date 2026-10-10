@@ -10,6 +10,7 @@ struct RightSidebar: View {
 
     private let cardCorner: CGFloat = 10
     private static let cardInset: CGFloat = 10
+    private enum ScrollAnchor: Hashable { case top }
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
     var body: some View {
@@ -35,19 +36,25 @@ struct RightSidebar: View {
         // Bulk close actions live in each card's ⋯ menu ("Close Other Panes")
         // and the menu bar ("Close All Right Panes") — no fixed in-pane bar.
         GeometryReader { viewport in
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(Array(nav.rightPanes.enumerated()), id: \.element.target) { (i, pane) in
-                        // A rename or zoom changes the target and recreates the card.
-                        // Moving another card preserves this card's editor.
-                        card(index: i, pane: pane, outlineWidth: Self.outlineWidth(
-                            in: viewport.size, scrollerStyle: scrollerStyle))
-                            .id(pane.target)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(Array(nav.rightPanes.enumerated()), id: \.element.target) { (i, pane) in
+                            // A rename or zoom changes the target and recreates the card.
+                            // Moving another card preserves this card's editor.
+                            card(index: i, pane: pane, outlineWidth: Self.outlineWidth(
+                                in: viewport.size, scrollerStyle: scrollerStyle))
+                                .id(pane.target)
+                        }
                     }
+                    .padding(.horizontal, Self.cardInset)
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
+                    .id(ScrollAnchor.top)
                 }
-                .padding(.horizontal, Self.cardInset)
-                .padding(.top, 8)
-                .padding(.bottom, 10)
+                .onChange(of: nav.rightPaneRevealToken) {
+                    proxy.scrollTo(ScrollAnchor.top, anchor: .top)
+                }
             }
         }
     }
