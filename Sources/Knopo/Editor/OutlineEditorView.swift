@@ -1004,16 +1004,17 @@ final class OutlineEditorController: NSObject {
                 ? editor.selectedRange() : nil)
             return
         }
-        // This page's own blocks are unchanged — but a `{{query}}` / `{{embed}}`
-        // renders from the *index* (other pages), so its results can change with
-        // no change here: e.g. a TODO toggled in another pane or window. Re-run
-        // those blocks on any data change, unless an edit is in progress here (a
-        // reload would re-attach the editor and drop the caret).
-        guard focusedBlockID == nil else { return }
-        let hasGenerated = fresh.contains {
-            $0.block.content.contains("{{query") || $0.block.content.contains("{{embed")
+        // References, embeds, and queries can change without edits to this page.
+        // Refresh their previews without reattaching the active editor.
+        for index in rows.indices {
+            let row = rows[index]
+            guard row.block.id != focusedBlockID,
+                  Self.renderDependsOnOtherBlocks(row.block.content) else { continue }
+            let rendered = cachedRender(row.block, depth: row.depth)
+            guard !rendered.isEqual(to: row.rendered) else { continue }
+            rows[index].rendered = rendered
+            reloadRow(index)
         }
-        if hasGenerated { reloadAndFocus(nil, selection: nil) }
     }
 
     private func matchesCurrent(_ fresh: [OutlineOps.VisibleRow]) -> Bool {

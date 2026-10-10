@@ -327,7 +327,7 @@ No `alias::` support in v1. One page, one name.
 
 - A `((uuid))` renders as the **live content of the referenced block** (transcluded), visually distinguished (dotted underline). Children of the referenced block are not transcluded.
 - Click navigates to the source block (its page, zoomed to the block). The transcluded text is not editable in place in v1.
-- The referenced block's render updates immediately when the source changes.
+- Visible references refresh when the source edit is saved, including while another block is being edited. The refresh preserves the active editor and caret.
 
 ### 7.3 Broken references
 
