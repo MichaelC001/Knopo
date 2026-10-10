@@ -541,7 +541,7 @@ extension AutocompleteController: NSTableViewDataSource, NSTableViewDelegate {
             ])
         case .block(let hit):
             let out = NSMutableAttributedString(
-                string: hit.content.components(separatedBy: "\n").first ?? hit.content,
+                string: BlockRenderer.plainPreview(hit.content),
                 attributes: [.font: mainFont, .foregroundColor: NSColor.labelColor]
             )
             out.append(NSAttributedString(string: "  \u{2014}  \(hit.pageDisplayName)",

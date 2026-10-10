@@ -197,8 +197,7 @@ struct BreadcrumbBar: View {
     }
 
     private func snippet(_ content: String) -> String {
-        let plain = InlineParser.plainText(InlineParser.parse(
-            content.components(separatedBy: "\n").first ?? content))
+        let plain = BlockRenderer.plainPreview(content)
         return plain.count > 40 ? String(plain.prefix(40)) + "…" : plain
     }
 }

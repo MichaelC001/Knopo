@@ -104,7 +104,7 @@ struct SearchPalette: View {
             case .block(let hit):
                 Image(systemName: "text.alignleft").foregroundStyle(.tertiary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(snippet(hit.content)).lineLimit(1)
+                    Text(verbatim: BlockRenderer.plainPreview(hit.content)).lineLimit(1)
                     Text(app.displayTitle(for: hit.pageDisplayName))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -137,10 +137,5 @@ struct SearchPalette: View {
             return
         }
         sidebar ? nav.openInRightSidebar(target) : nav.navigate(to: target)
-    }
-
-    private func snippet(_ content: String) -> String {
-        InlineParser.plainText(InlineParser.parse(
-            content.components(separatedBy: "\n").first ?? content))
     }
 }

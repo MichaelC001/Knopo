@@ -9,6 +9,8 @@ import KnopoCore
     private let original = "### **This is a nice happy block**"
     private let updated = "### **This is a nice happy block** (update) "
         + String(repeating: "longer reference text ", count: 8)
+    private let updatedPreview = "This is a nice happy block (update) "
+        + String(repeating: "longer reference text ", count: 8)
 
     @Test(arguments: [false, true])
     func samePageReferenceRefreshesAfterSaving(leaveEditor: Bool) async throws {
@@ -22,7 +24,7 @@ import KnopoCore
             app.flushPendingSaves()
             try await settle(window)
 
-            #expect(try referenceText(controller) == "Reference: " + updated)
+            #expect(try referenceText(controller) == "Reference: " + updatedPreview)
             #expect(controller.tableView.rect(ofRow: 1).height > oldHeight)
             if !leaveEditor {
                 #expect(window.firstResponder === editor)
@@ -50,7 +52,7 @@ import KnopoCore
             app.flushPendingSaves()
             try await settle(window)
 
-            #expect(try referenceText(controller) == "Reference: " + updated)
+            #expect(try referenceText(controller) == "Reference: " + updatedPreview)
             #expect(window.firstResponder === editor)
             #expect(editor.superview === host)
             #expect(editor.string == content)
@@ -92,7 +94,7 @@ import KnopoCore
         controller.focusBlock(shown.blocks[0].id, selection: NSRange(location: 0, length: 0))
         defer { controller.endEditing() }
         try await settle(window)
-        #expect(try referenceText(controller) == "Reference: " + original)
+        #expect(try referenceText(controller) == "Reference: This is a nice happy block")
         try await body(app, controller, window)
     }
 

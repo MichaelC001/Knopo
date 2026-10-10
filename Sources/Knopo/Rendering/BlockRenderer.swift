@@ -57,6 +57,8 @@ enum BlockRenderer {
         /// right block even in a query result or embed (where the surrounding
         /// row/region navigates elsewhere). Nil → the bare `knopo://toggle-todo`.
         var todoBlockID: UUID?
+        /// Inline references show one line and do not expand nested transclusions.
+        var inlineReference = false
 
         init(resolveBlockRef: @escaping (UUID) -> String? = { _ in nil },
              assetsDir: URL? = nil,
@@ -587,6 +589,18 @@ enum BlockRenderer {
         }
     }
 
+    /// The first line for a compact preview, without a heading's source prefix.
+    private static func previewSource(_ content: String) -> String {
+        let firstLine = content.components(separatedBy: "\n").first ?? content
+        if case .heading(_, let text) = BlockKind.classify(firstLine) { return text }
+        return firstLine
+    }
+
+    /// Plain text for search results, autocomplete, and breadcrumbs.
+    static func plainPreview(_ content: String) -> String {
+        InlineParser.plainText(InlineParser.parse(previewSource(content)))
+    }
+
     static func render(content: String, context: Context) -> NSAttributedString {
         var imageIndex = 0
         let body = renderBody(content: content, context: context, imageIndex: &imageIndex)
@@ -1096,6 +1110,10 @@ enum BlockRenderer {
                         ofSize: font.pointSize - 1, weight: .regular),
                      .foregroundColor: NSColor.systemTeal]))))
             case .link(let label, let url):
+                if context.inlineReference {
+                    out.append(NSAttributedString(string: label, attributes: attrs()))
+                    break
+                }
                 let dest = URL(string: url) ?? KnopoURL.page(url)
                 // External link: underlined + a trailing ↗ marking that it
                 // leaves the app — distinct from internal page refs.
@@ -1110,6 +1128,10 @@ enum BlockRenderer {
                     .font: NSFont.systemFont(ofSize: font.pointSize - 2),
                 ])))
             case .autolink(let url):
+                if context.inlineReference {
+                    out.append(NSAttributedString(string: url, attributes: attrs()))
+                    break
+                }
                 // A bare URL: shown as itself, clickable, always external — no
                 // `↗` (the URL is self-evidently a link) and never the internal
                 // page fallback. `%`-encode so an unusual char can't nil the URL.
@@ -1123,6 +1145,12 @@ enum BlockRenderer {
                 if let dest { linkAttrs[.link] = dest }
                 out.append(NSAttributedString(string: url, attributes: attrs(linkAttrs)))
             case .image(let alt, let src, let size):
+                if context.inlineReference {
+                    let filename = (src.hasPrefix("http") ? URL(string: src)?.lastPathComponent : nil)
+                        ?? (src as NSString).lastPathComponent
+                    out.append(NSAttributedString(string: alt.isEmpty ? filename : alt, attributes: attrs()))
+                    break
+                }
                 let index = imageIndex
                 imageIndex += 1
                 appendImage(alt: alt, src: src, size: size, imageIndex: index,
@@ -1132,6 +1160,11 @@ enum BlockRenderer {
                 // literal (stable) name: a date reference like `2026-06-10`
                 // shows as "Jun 10th, 2026" but stays ISO in the file.
                 let display = pageRefDisplay(name, context: context)
+                if context.inlineReference {
+                    let label = context.pageRefBrackets ? "[[\(display)]]" : display
+                    out.append(NSAttributedString(string: label, attributes: attrs()))
+                    break
+                }
                 let link = KnopoURL.page(name)
                 let nameAttrs = attrs([.link: link, .foregroundColor: NSColor.linkColor])
                 if context.pageRefBrackets {
@@ -1145,15 +1178,28 @@ enum BlockRenderer {
                     out.append(NSAttributedString(string: display, attributes: nameAttrs))
                 }
             case .blockRef(let id):
-                if let resolved = context.resolveBlockRef(id) {
+                if context.inlineReference {
+                    out.append(NSAttributedString(string: "((\(id.uuidString.lowercased())))", attributes: attrs()))
+                } else if let resolved = context.resolveBlockRef(id) {
                     // Transcluded live content, dotted underline (§7.2).
-                    let firstLine = resolved.components(separatedBy: "\n").first ?? resolved
-                    out.append(NSAttributedString(string: firstLine, attributes: attrs([
+                    var inner = context
+                    inner.inlineReference = true
+                    inner.resolveEmbed = { _ in nil }
+                    inner.resolveQuery = { _ in nil }
+                    let preview = NSMutableAttributedString()
+                    appendNodes(InlineParser.parse(previewSource(resolved)), to: preview,
+                                font: font, color: color, strike: strike, highlight: highlight,
+                                sourceOffset: nil, context: inner, imageIndex: &imageIndex)
+                    let range = NSRange(location: 0, length: preview.length)
+                    // The entire preview maps to the host's ((id)), not the target's source.
+                    preview.removeAttribute(sourceVerbatimKey, range: range)
+                    preview.addAttributes(marked(at: sourceOffset, [
                         .link: KnopoURL.block(id),
                         .underlineStyle: NSUnderlineStyle.single.rawValue
                             | NSUnderlineStyle.patternDot.rawValue,
                         .underlineColor: NSColor.linkColor,
-                    ])))
+                    ]), range: range)
+                    out.append(preview)
                 } else {
                     // Broken reference: render literally, never rewrite (§7.3).
                     out.append(NSAttributedString(
@@ -1165,6 +1211,10 @@ enum BlockRenderer {
                     ))
                 }
             case .tag(let name):
+                if context.inlineReference {
+                    out.append(NSAttributedString(string: "#\(name)", attributes: attrs()))
+                    break
+                }
                 // No `.backgroundColor`: `RenderedTextView` draws the tag pill
                 // (keyed on `tagKey`), clamped to the run's line height so a tall
                 // inline image on the same line can't balloon it.

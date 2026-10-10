@@ -74,8 +74,7 @@ struct TagViewScreen: View {
         return VStack(alignment: .leading, spacing: 2) {
             if !breadcrumb.isEmpty {
                 Text(breadcrumb.map { line in
-                    let plain = InlineParser.plainText(InlineParser.parse(
-                        line.components(separatedBy: "\n").first ?? line))
+                    let plain = BlockRenderer.plainPreview(line)
                     return plain.count > 30 ? String(plain.prefix(30)) + "…" : plain
                 }.joined(separator: " › "))
                 .font(.caption2).foregroundStyle(.tertiary)
