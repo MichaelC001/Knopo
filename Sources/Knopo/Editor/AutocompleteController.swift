@@ -468,6 +468,12 @@ final class AutocompleteController: NSObject {
         }
     }
 
+    /// Move the existing panel without rebuilding results or changing selection.
+    func reposition() {
+        guard isActive, let textView, textView.window != nil else { return }
+        presentPanel(anchoredTo: textView)
+    }
+
     func dismiss() {
         guard isActive else { return }
         isActive = false

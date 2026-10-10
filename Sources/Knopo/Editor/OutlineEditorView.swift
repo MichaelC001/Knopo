@@ -20,13 +20,15 @@ struct OutlineEditorView: View {
     /// Whether this outline is a right-sidebar pane (SPEC §5.4): panes are for
     /// reference, so they never put the caret in a block on their own.
     var inPane = false
+    /// The sidebar knows its width before AppKit asks for every row's height.
+    var initialWidth: CGFloat? = nil
     /// Feed outlines can coexist with an incoming day page during navigation.
     var inJournalFeed = false
 
     var body: some View {
         OutlineEditorRepresentable(
             app: app, nav: nav, pageName: pageName, zoom: zoom,
-            inPane: inPane, inJournalFeed: inJournalFeed, dataVersion: app.dataVersion,
+            inPane: inPane, inJournalFeed: inJournalFeed, initialWidth: initialWidth, dataVersion: app.dataVersion,
             // Reading these here makes the view (and updateNSView) react to find.
             findActive: nav.findActive, findQuery: nav.findQuery,
             findStepToken: nav.findStepToken, findForward: nav.findStepForward,
@@ -45,6 +47,7 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
     let zoom: UUID?
     let inPane: Bool
     let inJournalFeed: Bool
+    let initialWidth: CGFloat?
     /// @Published on AppState; bumps on external/index changes so
     /// `updateNSView` runs and the controller can diff and reload.
     let dataVersion: Int
@@ -68,11 +71,17 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
         context.coordinator.controller = controller
         context.coordinator.find = nav.find
         nav.find.register(controller)
+        controller.initialLayoutWidth = initialWidth
+        if let initialWidth {
+            // Avoid a full text-layout pass at the table's zero-width default.
+            controller.tableView.setFrameSize(NSSize(width: initialWidth, height: 0))
+        }
         controller.present(pageName: pageName, zoom: zoom)
         return controller.tableView
     }
 
     func updateNSView(_ nsView: OutlineTableView, context: Context) {
+        context.coordinator.controller?.initialLayoutWidth = initialWidth
         context.coordinator.controller?.present(pageName: pageName, zoom: zoom)
         // Any registered outline driving this is fine; the coordinator dedupes.
         nav.find.sync(active: findActive, query: findQuery,
@@ -108,6 +117,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     /// it — including AppKit's own re-measures, which no delegate call announces.
     var onDidLayout: (() -> Void)?
     var onLiveResizeEnd: (() -> Void)?
+    var usesSharedScrollView = false
     /// Clipboard actions for node selection (SPEC §13), so the Edit menu's Cut,
     /// Copy and Paste act on the selected blocks — and grey out with no selection —
     /// rather than only their shortcuts working.
@@ -212,18 +222,67 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
         return NSSize(width: NSView.noIntrinsicMetric, height: max(height, 28))
     }
 
+    private var preparingVisibleRows = false
     override func layout() {
         if let column = tableColumns.first, abs(column.width - bounds.width) > 0.5 {
             column.width = bounds.width
         }
         updateDepth += 1
+        let wasPreparing = preparingVisibleRows
+        preparingVisibleRows = true
         super.layout()
+        preparingVisibleRows = wasPreparing
         updateDepth -= 1
         if abs(bounds.width - lastLayoutWidth) > 0.5 {
             lastLayoutWidth = bounds.width
             onWidthChange?()
         }
         onDidLayout?()
+    }
+
+    override func rows(in rect: NSRect) -> NSRange {
+        // In a shared scroll view, AppKit's preparation rect can extend by the
+        // pane's offset in the document. Later panes then build every row.
+        // Keep a half-viewport prefetch margin during row preparation. AppKit
+        // retains the first responder's row separately from this range.
+        // Explicit geometry queries and standalone outlines stay unrestricted.
+        guard usesSharedScrollView, preparingVisibleRows || updateDepth > 0 else {
+            return super.rows(in: rect)
+        }
+        let visible = visibleRect.intersection(bounds)
+        guard !visible.isEmpty else { return NSRange(location: NSNotFound, length: 0) }
+        let buffered = visible.insetBy(dx: 0, dy: -visible.height / 2)
+        let clipped = rect.intersection(buffered)
+        guard !clipped.isEmpty else { return NSRange(location: NSNotFound, length: 0) }
+        return super.rows(in: clipped)
+    }
+
+    override func viewWillDraw() {
+        let wasPreparing = preparingVisibleRows
+        preparingVisibleRows = true
+        defer { preparingVisibleRows = wasPreparing }
+        super.viewWillDraw()
+    }
+
+    override func accessibilityChildren() -> [Any]? {
+        guard usesSharedScrollView else { return super.accessibilityChildren() }
+        // Walking offscreen row children makes AppKit construct their cells.
+        // Expose visible rows and the editor's row in the child tree.
+        // accessibilityRows still provides every row for table navigation.
+        // Use the untyped protocol API because AppKit's row proxies do not
+        // conform to NSAccessibilityRow. Compare their identity as AnyObject.
+        let accessibility = self as NSAccessibilityProtocol
+        var children = accessibility.accessibilityVisibleRows() ?? []
+        if let editor = window?.firstResponder as? NSView, editor.isDescendant(of: self) {
+            let index = row(for: editor)
+            if index >= 0, let rows = accessibility.accessibilityRows(), index < rows.count {
+                let focusedRow = rows[index] as AnyObject
+                if !children.contains(where: { ($0 as AnyObject) === focusedRow }) {
+                    children.append(focusedRow)
+                }
+            }
+        }
+        return children
     }
 
     override func viewDidEndLiveResize() {
@@ -328,9 +387,11 @@ final class OutlineEditorController: NSObject {
     /// Coalesces the deferred reveal: the reload, layout and height passes all ask.
     private var revealScheduled = false
     /// Reloads the table, then lets a pending reveal aim at the new geometry.
-    private func reloadAllRows() {
+    @discardableResult
+    private func reloadAllRows() -> Set<UUID> {
         tableView.reloadData()
         revealIfPossible()
+        return Set(rows.map(\.block.id))
     }
     /// The cell showing the current flash and the block it was lit for, so the
     /// flash can be taken off when that cell is reused for another row, or when a
@@ -349,6 +410,7 @@ final class OutlineEditorController: NSObject {
     /// decide whether taking focus is allowed.
     func applyPaneRole() {
         editor.isInPane = inPane
+        tableView.usesSharedScrollView = inPane || inJournalFeed
     }
     /// The presentation auto-focus has already fired for (see `presentationKey`).
     private var autoFocusedPresentation: String?
@@ -440,7 +502,10 @@ final class OutlineEditorController: NSObject {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.onWidthChange = { [weak self] in self?.widthDidChange() }
-        tableView.onDidLayout = { [weak self] in self?.revealIfPossible() }
+        tableView.onDidLayout = { [weak self] in
+            self?.revealIfPossible()
+            self?.autocomplete.reposition()
+        }
         tableView.onLiveResizeEnd = { [weak self] in self?.liveResizeDidEnd() }
         tableView.onKeyDown = { [weak self] in self?.handleSelectionKeyDown($0) ?? false }
         tableView.onCut = { [weak self] in self?.cutSelection() }
@@ -999,6 +1064,14 @@ final class OutlineEditorController: NSObject {
     }
 
     private var renderCache: [UUID: RenderCacheEntry] = [:]
+    var initialLayoutWidth: CGFloat?
+
+    private var rowLayoutWidth: CGFloat {
+        // SwiftUI probes a detached table at 100 points before placing it.
+        // Its pane already supplies the actual available width.
+        if tableView.window == nil, let initialLayoutWidth { return initialLayoutWidth }
+        return max(tableView.bounds.width, 100)
+    }
 
     /// Hash of every input `renderBlock` depends on. Returns nil for blocks
     /// whose output also depends on *other* blocks/pages and so can't be
@@ -1045,7 +1118,7 @@ final class OutlineEditorController: NSObject {
     /// `layout()` gives the row, so renders and measurements agree.
     private func contentWidth(forDepth depth: Int) -> CGFloat {
         OutlineRowCell.contentWidth(
-            forDepth: depth, rowWidth: max(tableView.bounds.width, 100))
+            forDepth: depth, rowWidth: rowLayoutWidth)
     }
 
     /// Block ids drift across re-parses (only `id::`-persisted blocks keep
@@ -1433,14 +1506,14 @@ final class OutlineEditorController: NSObject {
         // Tracked so a `{{query}}` can exclude its own host block from results.
         renderingBlockID = block.id
         defer { renderingBlockID = nil }
-        let out = render(block.content, todoBlockID: block.id,
+        let body = render(block.content, todoBlockID: block.id,
                          contentWidth: contentWidth, tableWidth: tableWidth(for: block))
-            .mutableCopy() as! NSMutableAttributedString
         let shown = block.properties.filter {
             !Block.hiddenPropertyKeys.contains($0.key)
                 && !Block.editOnlyPropertyKeys.contains($0.key)
         }
-        guard !shown.isEmpty else { return out }
+        guard !shown.isEmpty else { return body }
+        let out = body.mutableCopy() as! NSMutableAttributedString
         let keyAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: BlockRenderer.baseFontSize, weight: .medium),
             .foregroundColor: NSColor.tertiaryLabelColor,
@@ -1486,7 +1559,15 @@ final class OutlineEditorController: NSObject {
             rows.contains { $0.block.id == target } ? target : nil
         }
         focusedBlockID = newFocus
-        let reloadedIDs = applyRowChanges(from: old)
+        let reloadedIDs: Set<UUID>
+        if reuseStaticRenders {
+            reloadedIDs = applyRowChanges(from: old)
+        } else {
+            // Global style changes affect every row. Updating all their heights
+            // in place makes AppKit prepare rows across the old and new frames.
+            // A full reload discards that geometry and creates only visible cells.
+            reloadedIDs = reloadAllRows()
+        }
         // The row that hosted the editor isn't necessarily in the changed set —
         // Enter at the end of a block leaves its content (and so its cached
         // render) untouched — but its cell is in editing state. Reload it so it
@@ -1511,15 +1592,13 @@ final class OutlineEditorController: NSObject {
     /// rows. Unchanged rows keep their live cells untouched.
     private func applyRowChanges(from old: [Row]) -> Set<UUID> {
         guard tableView.numberOfRows == old.count else {
-            reloadAllRows()
-            return Set(rows.map(\.block.id))
+            return reloadAllRows()
         }
         let diff = rows.map(\.block.id).difference(from: old.map(\.block.id))
         // A wholesale change (an external reload re-mints every volatile id)
         // diffs into ~2n edits; a plain reload is cheaper.
         guard diff.count <= max(8, rows.count / 2) else {
-            reloadAllRows()
-            return Set(rows.map(\.block.id))
+            return reloadAllRows()
         }
         if !diff.isEmpty {
             tableView.beginUpdates()
@@ -1586,15 +1665,17 @@ final class OutlineEditorController: NSObject {
 
     /// Re-renders tables and embeds when their available width changes.
     /// An embed can contain tables at any depth.
-    private func rerenderWidthDependentRows() {
+    private func rerenderWidthDependentRows() -> IndexSet {
+        var changed = IndexSet()
         for index in rows.indices {
             let content = rows[index].block.content
             guard BlockKind.classify(content).isTable || content.contains("{{embed") else { continue }
             let rendered = cachedRender(rows[index].block, depth: rows[index].depth)
             guard rendered !== rows[index].rendered else { continue }
             rows[index].rendered = rendered
-            reloadRow(index)
+            if rows[index].block.id != focusedBlockID { changed.insert(index) }
         }
+        return changed
     }
 
     private func widthDidChange() {
@@ -1631,14 +1712,20 @@ final class OutlineEditorController: NSObject {
     }
 
     private func refreshRowsForWidth() {
-        rerenderWidthDependentRows()
-        let count = min(rows.count, tableView.numberOfRows)
-        if count > 0 {
-            noteHeightChanged(Array(0..<count))
-        } else {
-            tableView.invalidateIntrinsicContentSize()
+        let changedRenders = rerenderWidthDependentRows()
+        let changedHeights = (0..<min(rows.count, tableView.numberOfRows)).filter {
+            abs(tableView.rect(ofRow: $0).height
+                - self.tableView(tableView, heightOfRow: $0)) > 0.5
         }
-        revealIfPossible()   // the rows just changed height under any pending reveal
+        // Keep the editor in its cell, including any marked text. Height
+        // updates do not need to reset its content, focus, or scroll position.
+        noteHeightChanged(changedHeights)
+        if !changedRenders.isEmpty {
+            tableView.reloadData(forRowIndexes: changedRenders,
+                                 columnIndexes: IndexSet(integer: 0))
+        }
+        tableView.layoutSubtreeIfNeeded()
+        revealIfPossible()
     }
 
     // MARK: - Focus and the shared editor
@@ -2823,7 +2910,7 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
         guard rows.indices.contains(row) else { return OutlineRowCell.minRowHeight }
         let model = rows[row]
         let contentWidth = OutlineRowCell.contentWidth(
-            forDepth: model.depth, rowWidth: max(tableView.bounds.width, 100)
+            forDepth: model.depth, rowWidth: rowLayoutWidth
         )
         if model.block.id == focusedBlockID {
             // Focused rows show the full editable source (content + property

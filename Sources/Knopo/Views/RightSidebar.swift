@@ -9,6 +9,8 @@ struct RightSidebar: View {
     @EnvironmentObject var nav: Navigator
 
     private let cardCorner: CGFloat = 10
+    private static let cardInset: CGFloat = 10
+    @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
     var body: some View {
         paneList
@@ -24,29 +26,47 @@ struct RightSidebar: View {
                     .frame(height: 1)
                     .frame(maxWidth: .infinity)
             }
+            .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+                scrollerStyle = NSScroller.preferredScrollerStyle
+            }
     }
 
     private var paneList: some View {
         // Bulk close actions live in each card's ⋯ menu ("Close Other Panes")
         // and the menu bar ("Close All Right Panes") — no fixed in-pane bar.
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(Array(nav.rightPanes.enumerated()), id: \.offset) { (i, pane) in
-                    card(index: i, pane: pane)
+        GeometryReader { viewport in
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(Array(nav.rightPanes.enumerated()), id: \.element.target) { (i, pane) in
+                        // A rename or zoom changes the target and recreates the card.
+                        // Moving another card preserves this card's editor.
+                        card(index: i, pane: pane, outlineWidth: Self.outlineWidth(
+                            in: viewport.size, scrollerStyle: scrollerStyle))
+                            .id(pane.target)
+                    }
                 }
+                .padding(.horizontal, Self.cardInset)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
         }
     }
 
-    private func card(index i: Int, pane: RightPane) -> some View {
+    static func outlineWidth(in viewport: CGSize, scrollerStyle: NSScroller.Style) -> CGFloat {
+        // Reserve the legacy gutter for initial layout of long panes.
+        // Attached outlines use their actual width if the scroller is hidden.
+        let content = NSScrollView.contentSize(forFrameSize: viewport,
+            horizontalScrollerClass: nil, verticalScrollerClass: NSScroller.self,
+            borderType: .noBorder, controlSize: .regular, scrollerStyle: scrollerStyle)
+        return max(100, content.width - 2 * (cardInset + PageScreen.contentInset))
+    }
+
+    private func card(index i: Int, pane: RightPane, outlineWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             header(index: i, pane: pane)
             if !pane.collapsed {
                 Divider().padding(.horizontal, 12)
-                paneContent(pane.target)
+                paneContent(pane.target, outlineWidth: outlineWidth)
             }
         }
         // Clip content to the rounded shape so opaque panes (e.g. All Pages'
@@ -162,16 +182,16 @@ struct RightSidebar: View {
     }
 
     @ViewBuilder
-    private func paneContent(_ target: NavTarget) -> some View {
+    private func paneContent(_ target: NavTarget, outlineWidth: CGFloat) -> some View {
         switch target {
         case .page(let name, let zoom):
             // Page panes size to content (no inner ScrollView), so the whole
             // pane stack scrolls together — no nested/double scrolling.
-            PageScreen(pageName: name, zoom: zoom, inPane: true)
+            PageScreen(pageName: name, zoom: zoom, inPane: true, initialOutlineWidth: outlineWidth)
         case .journalHome:
             // In a pane, the journal is just today's page — not the full
             // infinite-scroll home — and sizes to content like other pages.
-            PageScreen(pageName: JournalDate.today().pageName, inPane: true)
+            PageScreen(pageName: JournalDate.today().pageName, inPane: true, initialOutlineWidth: outlineWidth)
         case .tag(let tag):
             // These bring their own ScrollView, so bound their height here.
             TagViewScreen(tag: tag, inPane: true).frame(height: 420)

@@ -18,8 +18,7 @@ struct TagViewScreen: View {
     var body: some View {
         let _ = app.dataVersion
         let hits = (try? app.store.cache.blocks(taggedWith: tag)) ?? []
-        let groups = Dictionary(grouping: hits, by: \.pageDisplayName)
-            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+        let groups = PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName))
 
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {

@@ -442,33 +442,47 @@ final class OutlineRowCell: NSTableCellView {
         max(40, rowWidth - CGFloat(depth) * indentPerDepth - gutterWidth - trailingPad)
     }
 
-    /// Twin of `renderedView` used for height measurement with the same
-    /// TextKit 2 layout the row actually draws with (`boundingRect`
-    /// under-measures and made rows shift when focus moved).
-    private static let measuringView = RenderedTextView.create()
+    /// Use the same TextKit 2 engine as the row without an NSTextView's
+    /// selection, display, and view-layout work for every measurement.
+    private static let measuringContent = NSTextContentStorage()
+    private static let measuringLayout: NSTextLayoutManager = {
+        let layout = NSTextLayoutManager()
+        let container = NSTextContainer(size: .zero)
+        container.lineFragmentPadding = 0
+        layout.textContainer = container
+        measuringContent.textStorage = NSTextStorage()
+        measuringContent.addTextLayoutManager(layout)
+        return layout
+    }()
 
     static func height(for attributed: NSAttributedString, contentWidth: CGFloat) -> CGFloat {
-        let view = measuringView
-        view.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 10)
-        view.textContainer?.size = NSSize(width: contentWidth, height: .greatestFiniteMagnitude)
+        let layout = measuringLayout
+        layout.textContainer?.size = NSSize(width: contentWidth, height: .greatestFiniteMagnitude)
+        let text: NSAttributedString
         if attributed.length > 0 {
-            view.textStorage?.setAttributedString(attributed)
+            text = attributed
         } else {
-            // Empty block: measure a single space at the base line height —
-            // same as the focused editor reports — so an empty row is exactly
-            // as tall as a one-line row and doesn't jump when focused (§5.4).
             let space = NSMutableAttributedString(
-                string: " ",
-                attributes: [.font: NSFont.systemFont(ofSize: BlockRenderer.baseFontSize)]
-            )
+                string: " ", attributes: [.font: NSFont.systemFont(ofSize: BlockRenderer.baseFontSize)])
             BlockRenderer.pinLineHeight(space, BlockRenderer.lineHeight(forSource: ""))
-            view.textStorage?.setAttributedString(space)
+            text = space
         }
-        guard let layoutManager = view.textLayoutManager else { return minRowHeight }
-        view.updateContentInsets()
-        layoutManager.ensureLayout(for: layoutManager.documentRange)
-        let textHeight = ceil(layoutManager.usageBoundsForTextContainer.height)
-        return max(minRowHeight, textHeight + view.textContainerInset.height * 2 + verticalPadding * 2)
+        measuringContent.textStorage?.setAttributedString(text)
+        layout.ensureLayout(for: layout.documentRange)
+        return max(minRowHeight, ceil(layout.usageBoundsForTextContainer.height)
+                   + contentInset(for: text) * 2 + verticalPadding * 2)
+    }
+
+    /// Leave room for table rules and backgrounds in both measured and displayed rows.
+    static func contentInset(for text: NSAttributedString) -> CGFloat {
+        var inset = contentInsetV
+        text.enumerateAttribute(BlockRenderer.tableKey, in: NSRange(location: 0, length: text.length)) { value, _, stop in
+            if value != nil {
+                inset = max(contentInsetV, BlockRenderer.tableRowPad + 3)
+                stop.pointee = true
+            }
+        }
+        return inset
     }
 
     // MARK: - Hover preview (SPEC §6.1)
@@ -1049,16 +1063,8 @@ final class RenderedTextView: NSTextView {
     /// Reserve space for table rules and rounded backgrounds inside the row.
     /// Plain text and the raw-source editor keep their usual inset.
     func updateContentInsets() {
-        var hasTable = false
-        if let storage = textStorage {
-            storage.enumerateAttribute(BlockRenderer.tableKey,
-                                       in: NSRange(location: 0, length: storage.length)) { value, _, stop in
-                if value != nil { hasTable = true; stop.pointee = true }
-            }
-        }
-        let inset = hasTable
-            ? max(OutlineRowCell.contentInsetV, BlockRenderer.tableRowPad + 3)
-            : OutlineRowCell.contentInsetV
+        let inset = textStorage.map { OutlineRowCell.contentInset(for: $0) }
+            ?? OutlineRowCell.contentInsetV
         if textContainerInset.height != inset {
             textContainerInset = NSSize(width: 0, height: inset)
         }

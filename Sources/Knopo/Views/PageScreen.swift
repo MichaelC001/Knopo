@@ -9,6 +9,8 @@ struct PageScreen: View {
     let pageName: String
     var zoom: UUID? = nil
     var inPane = false
+    var initialOutlineWidth: CGFloat? = nil
+    static let contentInset: CGFloat = 20
 
     @State private var renameSheetShown = false
     @State private var renameText = ""
@@ -33,13 +35,14 @@ struct PageScreen: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            OutlineEditorView(pageName: pageName, zoom: zoom, inPane: inPane)
+            OutlineEditorView(pageName: pageName, zoom: zoom, inPane: inPane,
+                              initialWidth: initialOutlineWidth)
             if !inPane {
                 Divider().padding(.vertical, 8)
                 ReferencesSection(pageName: pageName)
             }
         }
-        .padding(20)
+        .padding(Self.contentInset)
         .frame(maxWidth: .infinity, alignment: .leading)
 
         return Group {

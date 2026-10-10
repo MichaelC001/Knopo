@@ -32,8 +32,7 @@ struct ReferencesSection: View {
 
     @ViewBuilder
     private func linkedSection(_ hits: [BacklinkHit]) -> some View {
-        let groups = Dictionary(grouping: hits, by: \.pageDisplayName)
-            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+        let groups = PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName))
 
         HStack(spacing: 6) {
             Text("Linked References").font(.headline)

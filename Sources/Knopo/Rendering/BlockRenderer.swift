@@ -604,6 +604,10 @@ enum BlockRenderer {
     /// render visually larger than the text at the same point size). Shared with
     /// the focused editor so emoji are the same size focused and unfocused.
     static func shrinkEmoji(_ string: NSMutableAttributedString, scale: CGFloat) {
+        // Most blocks have no emoji. Avoid enumerating composed characters
+        // through Foundation unless a scalar actually needs this adjustment.
+        guard string.string.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation })
+        else { return }
         let ns = string.string as NSString
         var edits: [(NSRange, NSFont)] = []
         ns.enumerateSubstrings(
