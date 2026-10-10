@@ -12,7 +12,7 @@ That creates `Localization/zh-Hans.lproj/` holding every string, with the Englis
 text on both sides of each line and, where one exists, a comment above it saying
 what the string is for. Replace the right-hand sides.
 
-Name the directory with the language tag macOS uses. The ones asked for most:
+Name the directory with the language tag macOS uses. Some popular examples:
 
 | Tag | Language |
 | --- | --- |

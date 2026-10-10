@@ -324,9 +324,9 @@ Use `⌘J` to go to today: the journal opens and the caret lands in an empty blo
 at the end of today, ready to type. Every press does both, from another page or
 from another day in the feed, so it doesn't matter where you were — and it never
 navigates away from the journal, so repeating it doesn't bounce you between views.
-Click a day's heading to open that day on its own page. A block being edited
-elsewhere — including one in the right sidebar — hands its editing back and commits
-what you had typed there. Right-click **Journal** in the sidebar and
+Click a day's heading to open that day on its own page. If you were editing another
+block, including one in the right sidebar, Knopo ends that editing session and
+commits your changes. Right-click **Journal** in the sidebar and
 choose **Jump to Day…** to navigate to another date. Slash commands such as
 `/today`, `/tomorrow`, `/yesterday`, and `/date` insert date references.
 

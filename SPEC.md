@@ -16,12 +16,12 @@ This document specifies functional behavior, the data model, the on-disk format,
 - **Tags** as lightweight labels (`#tag`) — a separate namespace from pages.
 - **Journal**: one page per day, auto-created, reverse-chronologically browsable.
 - **Favourites** and **recent pages** for navigation.
+- **Queries** for tags, page references, task state, and properties (§17).
 - Fast full-graph operations (backlinks, search) on graphs up to ~10,000 pages / ~1,000,000 blocks.
 
 ### Non-goals
 
 - Whiteboards, flashcards, PDF annotation, task management beyond plain text.
-- Queries — deferred, not rejected: v1 ships without them but must stay forward-compatible (§17).
 - Plugin system, themes beyond light/dark, custom CSS.
 - HTTP server, sync service, real-time collaboration, multi-user anything.
 - Mobile apps and cross-platform support. Native macOS only.
@@ -188,7 +188,7 @@ A focused table shows its raw source — there is no cell-level editing UX in v1
 | `max` (default) | as wide as the row allows: columns share the full content width in proportion to their natural widths |
 | `min` | only as wide as its content needs |
 
-**A table never exceeds the row either way** — it is fitted, not clipped. When the natural columns don't fit, the widest ones are capped until the table fits and narrow columns keep their width, so a `Qty` column stays legible instead of being squeezed to buy points for a paragraph-wide neighbour. A table with more columns than the row can seat trims its cell padding rather than overflow. Widths are recomputed as the window resizes.
+**A table never exceeds the row either way** — it is fitted, not clipped. When the natural columns don't fit, the widest ones shrink until the table fits. Narrow columns keep their width, so a `Qty` column stays legible. A table with more columns than the row can seat trims its cell padding rather than overflow. Widths are recomputed as the window resizes.
 
 v1 limitation: a cell never wraps — an over-long one tail-truncates with an ellipsis at whatever width its column gets. Where there is no room to lay a grid out — reference and query-result rows and hover previews — a table block shows its raw pipe source instead. Tables inside `{{embed}}` transclusions use the available width inside the generated region. Conversely, an `{{embed}}` or `{{query}}` *inside a cell* renders as the muted chip it does elsewhere, never as an expanded region: a cell is one line, and a multi-row result set has nowhere to go in it.
 
@@ -268,7 +268,7 @@ All commands are one undo step together with the keystrokes of the current edit 
 - Committing the command removes the trigger and opens a small **date picker** anchored at the caret (a graphical month calendar, popover-style like `/link` — not a window-modal sheet), preselecting today.
 - Click a day to select it; `Enter` (or the Insert button) confirms, `Esc` (or clicking outside) cancels. Double-clicking a day confirms immediately.
 - On confirm, `[[<ISO date>]]` for the chosen day is inserted at the trigger position (the same stable ISO form `/today` uses, §10), so it renders as the pretty date title and links to that journal page. On cancel, nothing is inserted.
-- This is what makes `/date` reference *any* day rather than only today; free-form natural-language date entry ("next friday") remains deferred.
+- Free-form natural-language date entry ("next friday") remains deferred.
 
 #### 5.5.5 `/image`
 
@@ -427,7 +427,7 @@ The reference index updates with the page (same cadence) and on external file ch
 ### 11.1 Favourites
 
 - Any page (including journal pages) can be favourited via its page menu or sidebar context menu.
-- **Tags can be favourited too** (revises the earlier "tags cannot be favourited" stance): favourite tags are stored separately from page favourites and navigate to the tag view. In the sidebar Favourites section, pages and tags are distinguished by icon (a document for pages, a hash for tags) rather than a star.
+- **Tags can be favourited too**: favourite tags are stored separately from page favourites and navigate to the tag view. In the sidebar Favourites section, pages and tags are distinguished by icon (a document for pages, a hash for tags) rather than a star.
 - Favourites appear as a reorderable (drag-and-drop) list at the top of the left sidebar (pages and tags reorder within their own groups).
 - Persisted in `config.json` and survive cache deletion: page favourites as an ordered list of page names, tag favourites as an ordered list of tag names. A favourite whose page/tag is renamed follows the rename; a favourite whose page is deleted is removed.
 
@@ -499,13 +499,11 @@ Native macOS application written in **Swift**.
 | Delete page | `NSWorkspace.recycle` (OS trash) |
 | Undo | Custom global undo stack (§13), bridged to `NSUndoManager` |
 
-Rationale for going native over a web-view shell (Tauri/Electron): the spec is macOS-only, the hard runtime problems (virtualized outline, file watching, fast search) are easier with platform APIs, and the polish ceiling is higher. The accepted cost is building the focused-block editor (highlighting + autocomplete) by hand, since no ready-made Swift component implements a per-block editing model.
+Rationale for going native over a web-view shell (Tauri/Electron): the spec is macOS-only, and the hard runtime problems (virtualized outline, file watching, fast search) are easier with platform APIs. The accepted cost is building the focused-block editor (highlighting + autocomplete) by hand, since no ready-made Swift component implements a per-block editing model.
 
 ## 16. Out of scope (explicit)
 
 Whiteboards; HTTP/API server; plugin system; sync/collaboration; mobile; **editable-in-place** embeds (read-only `{{embed …}}` is supported — §7.6); flashcards; PDF annotation; org-mode files; aliases; hierarchical tag semantics; encryption.
-
-Queries are not out of scope — they are deferred; see §17.
 
 ## 17. Queries — `{{query …}}`
 

@@ -44,32 +44,20 @@ See the [user guide](docs/features.md) for full documentation.
 
 ## Why it exists
 
-There's no shortage of outliners, and several are polished Logseq clones. Knopo
-exists for a different set of priorities. It's native macOS, no Electron. And it's
-opinionated: it keeps Logseq's block model where that's the right idea, but it
-isn't a clone and doesn't copy every Logseq decision. The bar is quality and
-stability over feature count - each feature is deliberate and vetted, not added
-just because another app has it.
+Knopo uses Logseq's block model without copying all of its design choices.
+Quality and stability take priority over feature count. Each feature is chosen
+and reviewed on its own merits, rather than added just because another app has it.
 
-What that looks like in practice:
-
-- **Your files, forever** - Markdown is the source of truth and the app is
+- **Markdown files** - Markdown is the source of truth and the app is
   disposable. The graph stays readable, greppable, git-friendly, and byte-stable,
   so editing never churns your files.
-- **Scales without bloating** - the whole graph is never held in RAM; pages load
+- **On-demand loading** - the whole graph is never held in RAM; pages load
   on demand, so memory and startup stay flat as the graph grows.
-- **Fast everything** - a rebuildable SQLite index (`.knopo/cache.db`) backs
+- **Indexed navigation** - a rebuildable SQLite index (`.knopo/cache.db`) backs
   search, backlinks, tags, and queries, keeping navigation cheap on large graphs.
-- **Native, not a browser** - AppKit and SwiftUI. Small, quick to launch, and
-  edited in a real macOS text view (more below).
-
-## What native buys you
-
-Knopo is a real macOS app, not a wasteful Electromonster. What that gets you:
-
-- **A real text editor** - the block you're editing is an actual macOS text view,
-  so typing feels like it does everywhere else on the Mac. Web-based editors
-  rebuild native behaviour by hand and rarely nail it.
+- **A real text editor** - Knopo uses AppKit and SwiftUI. The block you're editing
+  is an actual macOS text view, so typing feels like it does everywhere else on
+  the Mac. Web-based editors rebuild native behaviour by hand and rarely nail it.
 - **Small and quick** - no bundled browser, so it's a few megabytes, launches
   instantly, and stays light on memory and battery for something you keep open all
   day. (To be fair, that's mostly a dig at Electron, there are leaner web shells.)
@@ -93,9 +81,8 @@ codebase.
 | Plugins               | ✓        | ✓      | ✓             | ✗         | ✓     | ✗       |
 
 The closest neighbour is **Logseq** - same outliner model, open source, block
-references, embeds, and queries - but Electron. Knopo makes the opposite platform
-bet (see *What native buys you* above): native and macOS-only rather than
-cross-platform.
+references, embeds, and queries - but Electron. Knopo uses native macOS components
+and is macOS-only.
 
 ## Status
 
@@ -141,7 +128,7 @@ The interface is English and picks up any language you add. To add one, see
 This app is not notarized, so macOS Gatekeeper blocks a *downloaded* copy on first
 launch. To run it, either:
 
-- strip the quarantine flag - `xattr -dr com.apple.quarantine /path/to/Knopo.app`, or
+- strip the quarantine flag - `sudo xattr -dr com.apple.quarantine /path/to/Knopo.app`, or
 - open **System Settings → Privacy & Security** and click **Open Anyway**.
 
 On macOS 15 (Sequoia) the old Control-click → Open shortcut no longer bypasses
