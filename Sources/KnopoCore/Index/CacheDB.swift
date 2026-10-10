@@ -11,6 +11,12 @@ public struct BacklinkHit: Equatable, Sendable {
     public var content: String
 }
 
+/// One ancestor of a block, for a clickable breadcrumb.
+public struct BreadcrumbItem: Equatable, Sendable {
+    public var id: UUID
+    public var content: String
+}
+
 public struct SearchHit: Equatable, Sendable {
     public var blockID: UUID
     public var pageKey: String
@@ -834,7 +840,7 @@ public final class CacheDB: @unchecked Sendable {
             let direct = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT DISTINCT b.id, b.page_key, b.content, p.display_name
+                    SELECT DISTINCT b.id, b.page_key, b.content, b.position, p.display_name
                     FROM page_refs r
                     JOIN blocks b ON b.id = r.block_id
                     JOIN pages p ON p.name_key = b.page_key
@@ -845,7 +851,7 @@ public final class CacheDB: @unchecked Sendable {
             let viaBlockRefs = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT DISTINCT src.id, src.page_key, src.content, p.display_name
+                    SELECT DISTINCT src.id, src.page_key, src.content, src.position, p.display_name
                     FROM block_refs br
                     JOIN blocks tgt ON tgt.id = br.target_id
                     JOIN blocks src ON src.id = br.block_id
@@ -855,19 +861,22 @@ public final class CacheDB: @unchecked Sendable {
                 arguments: [pageKey, pageKey]
             )
             var seen = Set<String>()
-            var hits: [BacklinkHit] = []
+            var hits: [(hit: BacklinkHit, position: Int)] = []
             for row in direct + viaBlockRefs {
                 let idString: String = row["id"]
                 guard !seen.contains(idString), let uuid = UUID(uuidString: idString) else { continue }
                 seen.insert(idString)
-                hits.append(BacklinkHit(
+                hits.append((BacklinkHit(
                     blockID: uuid,
                     pageKey: row["page_key"],
                     pageDisplayName: row["display_name"],
                     content: row["content"]
-                ))
+                ), row["position"]))
             }
-            return hits.sorted { ($0.pageDisplayName, $0.content) < ($1.pageDisplayName, $1.content) }
+            // Document order within a page, so a parent comes before its children.
+            return hits.sorted {
+                ($0.hit.pageDisplayName, $0.position) < ($1.hit.pageDisplayName, $1.position)
+            }.map(\.hit)
         }
     }
 
@@ -895,6 +904,43 @@ public final class CacheDB: @unchecked Sendable {
     public func breadcrumb(ofBlock id: UUID) throws -> [String] {
         try dbQueue.read { db in
             try Self.breadcrumb(db, blockID: id.uuidString.lowercased())
+        }
+    }
+
+    /// Ancestors of many blocks in one query, outermost first. Blocks without
+    /// ancestors are absent from the result.
+    public func breadcrumbs(ofBlocks ids: [UUID]) throws -> [UUID: [BreadcrumbItem]] {
+        guard !ids.isEmpty else { return [:] }
+        return try dbQueue.read { db in
+            var result: [UUID: [(depth: Int, item: BreadcrumbItem)]] = [:]
+            // Chunked to stay under SQLite's bound-variable limit.
+            for start in stride(from: 0, to: ids.count, by: 500) {
+                let chunk = ids[start..<min(start + 500, ids.count)].map { $0.uuidString.lowercased() }
+                let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                        WITH RECURSIVE up(hit, id, hops) AS (
+                            SELECT b.id, b.parent_id, 1 FROM blocks b
+                            WHERE b.id IN (\(marks)) AND b.parent_id IS NOT NULL
+                            UNION ALL
+                            SELECT up.hit, b.parent_id, up.hops + 1
+                            FROM up JOIN blocks b ON b.id = up.id
+                            WHERE b.parent_id IS NOT NULL AND up.hops < 64
+                        )
+                        SELECT up.hit, up.id, up.hops, b.content
+                        FROM up JOIN blocks b ON b.id = up.id
+                        """,
+                    arguments: StatementArguments(chunk)
+                )
+                for row in rows {
+                    guard let hit = UUID(uuidString: row["hit"]),
+                          let id = UUID(uuidString: row["id"]) else { continue }
+                    result[hit, default: []].append(
+                        (row["hops"], BreadcrumbItem(id: id, content: row["content"])))
+                }
+            }
+            return result.mapValues { $0.sorted { $0.depth > $1.depth }.map(\.item) }
         }
     }
 
@@ -970,11 +1016,13 @@ public final class CacheDB: @unchecked Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT DISTINCT b.id, b.page_key, b.content, p.display_name
+                    SELECT DISTINCT b.id, b.page_key, b.content, b.position, p.display_name
                     FROM tags t
                     JOIN blocks b ON b.id = t.block_id
                     JOIN pages p ON p.name_key = b.page_key
                     WHERE t.tag = ?
+                    -- Document order within a page, so a parent comes before its children.
+                    ORDER BY p.display_name COLLATE NOCASE, b.position
                     """,
                 arguments: [tag.lowercased()]
             )
@@ -986,7 +1034,7 @@ public final class CacheDB: @unchecked Sendable {
                     pageDisplayName: row["display_name"],
                     content: row["content"]
                 )
-            }.sorted { ($0.pageDisplayName, $0.content) < ($1.pageDisplayName, $1.content) }
+            }
         }
     }
 

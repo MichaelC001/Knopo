@@ -118,6 +118,30 @@ import Foundation
         }
     }
 
+    @Test func backlinksKeepDocumentOrderAndBatchBreadcrumbs() throws {
+        let store = try makeGraph([
+            "Notes": "- Root\n  - Zed [[Target]]\n    - Alpha [[Target]]\n  - Beta [[Target]]\n",
+        ])
+        let hits = try store.cache.backlinks(of: "target")
+        // Preorder, not alphabetical: a parent comes before its child.
+        expectEqual(hits.map(\.content), ["Zed [[Target]]", "Alpha [[Target]]", "Beta [[Target]]"])
+        let crumbs = try store.cache.breadcrumbs(ofBlocks: hits.map(\.blockID))
+        expectEqual(crumbs[hits[0].blockID]?.map(\.content), ["Root"])
+        expectEqual(crumbs[hits[1].blockID]?.map(\.content), ["Root", "Zed [[Target]]"])
+        expectEqual(crumbs[hits[1].blockID]?.last?.id, hits[0].blockID)
+        expectEqual(crumbs[hits[2].blockID]?.map(\.content), ["Root"])
+        let root = try #require(crumbs[hits[0].blockID]?.first?.id)
+        expectTrue(try store.cache.breadcrumbs(ofBlocks: [root]).isEmpty)
+    }
+
+    @Test func taggedBlocksKeepDocumentOrder() throws {
+        let store = try makeGraph([
+            "Notes": "- Zed #idea\n  - Alpha #idea\n- Beta #idea\n",
+        ])
+        expectEqual(try store.cache.blocks(taggedWith: "idea").map(\.content),
+                    ["Zed #idea", "Alpha #idea", "Beta #idea"])
+    }
+
     @Test func blockRefCountsAsPageBacklink() throws {
         // A ((ref)) to block B counts as a linked reference to B's page (§7.5).
         let id = "6f1c9e2a-3b4d-4c5e-8f90-1a2b3c4d5e6f"

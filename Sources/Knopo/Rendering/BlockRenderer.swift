@@ -59,6 +59,9 @@ enum BlockRenderer {
         var todoBlockID: UUID?
         /// Inline references show one line and do not expand nested transclusions.
         var inlineReference = false
+        /// Reference lists show a heading at body size, bold, so one heading
+        /// block does not outweigh the list around it.
+        var compactHeadings = false
 
         init(resolveBlockRef: @escaping (UUID) -> String? = { _ in nil },
              assetsDir: URL? = nil,
@@ -609,7 +612,7 @@ enum BlockRenderer {
         // A table's "wrapped lines" are its rows: they must abut so the grid
         // reads as one figure, so it takes no inter-line spacing.
         let isTable = context.tables && BlockKind.classify(content).isTable
-        pinLineHeight(mutable, lineHeight(forSource: content),
+        pinLineHeight(mutable, lineHeight(forSource: context.compactHeadings ? "" : content),
                       lineSpacing: isTable ? 0 : lineSpacing)
         return mutable
     }
@@ -680,7 +683,8 @@ enum BlockRenderer {
             return renderTable(header: header, alignments: alignments, rows: rows,
                                context: context, imageIndex: &imageIndex)
         case .heading(let level, let text):
-            return inline(text, baseFont: headingFont(level: level),
+            let font = context.compactHeadings ? bolder(baseFont()) : headingFont(level: level)
+            return inline(text, baseFont: font,
                           sourceBase: sourceBase(of: text, in: content),
                           context: context, imageIndex: &imageIndex)
         case .quote(let text):

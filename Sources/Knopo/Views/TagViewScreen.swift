@@ -21,13 +21,14 @@ struct TagViewScreen: View {
         let groups = PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName))
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12 * BlockRenderer.zoom) {
                 if !inPane {
                     HStack {
                         Text(verbatim: "#\(tag)")   // the tag is data, not a key
-                            .font(.system(size: 24, weight: .bold))
+                            .font(.system(size: BlockRenderer.pageTitleFontSize, weight: .bold))
                             .foregroundStyle(.purple)
                         Text("\(hits.count) blocks")   // pluralized in Localization/en.lproj
+                            .font(.system(size: BlockRenderer.baseFontSize))
                             .foregroundStyle(.secondary)
                         Spacer()
                         ActionsMenu {
@@ -43,68 +44,17 @@ struct TagViewScreen: View {
                         }
                     }
                     Text("Tag view — generated, read-only. Tags are labels, not pages.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: BlockRenderer.baseFontSize * 0.85))
+                        .foregroundStyle(.secondary)
                 }
 
-                ForEach(groups, id: \.key) { (page, groupHits) in
-                    VStack(alignment: .leading, spacing: 4) {
-                        // Journal pages show their pretty date, not the raw
-                        // ISO / Logseq filename form; navigation uses the key.
-                        Button(app.displayTitle(for: page)) {
-                            nav.navigate(to: .page(name: page))
-                        }
-                        .buttonStyle(.link)
-                        .font(.subheadline.weight(.semibold))
-                        ForEach(groupHits, id: \.blockID) { hit in
-                            tagHitRow(hit)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
+                // Read-only results, laid out like Linked References.
+                BlockResultList(groups: groups, editable: false)
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: $renameShown) { renameSheet }
-    }
-
-    private func tagHitRow(_ hit: BacklinkHit) -> some View {
-        let breadcrumb = (try? app.store.cache.breadcrumb(ofBlock: hit.blockID)) ?? []
-        return VStack(alignment: .leading, spacing: 2) {
-            if !breadcrumb.isEmpty {
-                Text(breadcrumb.map { line in
-                    let plain = BlockRenderer.plainPreview(line)
-                    return plain.count > 30 ? String(plain.prefix(30)) + "…" : plain
-                }.joined(separator: " › "))
-                .font(.caption2).foregroundStyle(.tertiary)
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Circle().fill(Color.secondary.opacity(0.5))
-                    .frame(width: 5, height: 5).padding(.top, 5)
-                Text(AttributedString(BlockRenderer.render(
-                    content: hit.content,
-                    context: BlockRenderer.Context(
-                        resolveBlockRef: { [weak app] id in
-                            app?.store.resolveBlock(id)?.block.content
-                        },
-                        assetsDir: app.store.assetsDir,
-                        tables: false // raw source in a snippet row (§5.2)
-                    )
-                )))
-                .environment(\.openURL, OpenURLAction { url in
-                    nav.openURL(url, inSidebar: wantsSidebarClick())
-                    return .handled
-                })
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                nav.navigateToBlock(pageName: hit.pageDisplayName, blockID: hit.blockID,
-                                    content: hit.content, inSidebar: wantsSidebarClick())
-            }
-        }
-        .padding(.leading, 14)
-        .padding(.vertical, 1)
     }
 
     private var renameSheet: some View {

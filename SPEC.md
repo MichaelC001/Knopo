@@ -376,6 +376,7 @@ A block whose content contains `{{embed ((uuid))}}` or `{{embed [[Page Name]]}}`
 - Rendered as a chip. Clicking a tag opens a **tag view**: a generated, read-only result list of all blocks carrying that tag, grouped by page, each block rendered with breadcrumb and click-to-navigate. The tag view is not a page — it can't be edited, referenced, or linked to. A tag *can* be favourited, however (§11.1). Hovering one previews its first ~10 blocks, each line naming the page it is on.
 - Typing `#` opens autocomplete over existing tags.
 - Tag view groups follow the Linked References order: journal days newest first, then other pages alphabetically.
+- Tag view groups and rows use the Linked References layout (§9.1): document order, nesting, shared breadcrumbs, and content zoom. Rows are read-only. Clicking a block's text or bullet opens the block, and images cannot be resized.
 - A **Tags** entry in the left sidebar lists tags with usage counts, ordered most-used first; the displayed list is capped (15 in v1, later a setting). Clicking opens the tag view. The usage count is the number of occurrences (a tag appearing twice in one block counts twice).
 - Tag occurrences do **not** appear in any page's Linked References (there is no page to link to).
 - Renaming a tag (from the tag view's menu) rewrites all occurrences across the graph, same machinery as page rename.
@@ -389,8 +390,11 @@ Every page (including journal pages and stubs) shows below its content:
 ### 9.1 Linked References
 
 - All blocks anywhere in the graph whose content contains `[[This Page]]`, plus blocks containing a `((ref))` to one of this page's blocks (§7.5).
-- Grouped by source page; each group collapsible; each block rendered with its breadcrumb (page › ancestor blocks) and **editable in place** — edits write through to the source page.
-- Journal groups come first, newest to oldest, followed by other pages alphabetically.
+- Grouped by source page; each block rendered with its breadcrumb (page › ancestor blocks) and **editable in place** — edits write through to the source page.
+- Journal groups come first, newest to oldest, followed by other pages alphabetically. Blocks within a group follow document order.
+- The section and each group collapse with their chevron; a group's page name opens the page. Each breadcrumb entry opens its block. A block's bullet opens the block, and hovering a row highlights it. `Cmd+Click` or `Shift+Click` opens any of these in the right sidebar.
+- A block whose ancestor is also a result is nested under that result. A breadcrumb already shown for the row above at the same level is not repeated.
+- Headings show at body size, bold. Links in a block work as they do in the outline. All text in the section follows content zoom (`Cmd +/-`).
 - A block matches if the reference appears in the block itself; ancestors/descendants of matching blocks are shown as context (one level of children, collapsed) but don't count toward the match total.
 - Count badge in the section header. Section collapsed by default if count is 0 (hidden entirely).
 - Self-references (a page linking to itself) are excluded.

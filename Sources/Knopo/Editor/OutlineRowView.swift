@@ -596,6 +596,10 @@ final class RenderedTextView: NSTextView {
     /// pause on the way to clicking it opens nothing.
     static let hoverPreviewDelay: TimeInterval = 0.7
     var onImageResize: (_ imageIndex: Int, _ width: CGFloat) -> Void = { _, _ in }
+    /// Off in read-only lists: no handle, no hover bar, no resize cursor.
+    var allowsImageResize = true {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
     /// Right-click shows the block context menu (Copy as Markdown, etc.), not the
     /// stock text-view menu — whose Copy would serialize the *rendered* attributed
     /// string (image/checkbox attachments as `U+FFFC`, `↗` on links, display-title
@@ -918,7 +922,8 @@ final class RenderedTextView: NSTextView {
     }
 
     private func imageHandle(at point: NSPoint) -> (index: Int, frame: NSRect)? {
-        imageHit(at: point) { imageHandleRect(for: $0).contains(point) }
+        guard allowsImageResize else { return nil }
+        return imageHit(at: point) { imageHandleRect(for: $0).contains(point) }
     }
 
     private func image(at point: NSPoint) -> (index: Int, frame: NSRect)? {
@@ -1072,7 +1077,7 @@ final class RenderedTextView: NSTextView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard let storage = textStorage, storage.length > 0 else { return }
+        guard allowsImageResize, let storage = textStorage, storage.length > 0 else { return }
         storage.enumerateAttribute(
             BlockRenderer.imageIndexKey,
             in: NSRange(location: 0, length: storage.length)
@@ -1211,7 +1216,7 @@ final class RenderedTextView: NSTextView {
         super.mouseMoved(with: event)
         let point = convert(event.locationInWindow, from: nil)
         let handle = imageHandle(at: point)
-        let hoveredImage = handle ?? image(at: point)
+        let hoveredImage = allowsImageResize ? handle ?? image(at: point) : nil
         if hoverImageIndex != hoveredImage?.index {
             hoverImageIndex = hoveredImage?.index
             updateResizeOverlay(hoverFrame: hoveredImage?.frame, preview: nil)

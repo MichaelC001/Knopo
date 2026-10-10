@@ -1,12 +1,14 @@
+import AppKit
 import SwiftUI
 import KnopoCore
 
 /// Linked References and Unlinked References below page content (SPEC §9).
 struct ReferencesSection: View {
     @EnvironmentObject var app: AppState
+    @EnvironmentObject var nav: Navigator
     let pageName: String
 
-    @State private var collapsedGroups: Set<String> = []
+    @State private var linkedExpanded = true
     @State private var unlinkedExpanded = false
 
     var body: some View {
@@ -18,62 +20,60 @@ struct ReferencesSection: View {
         // for it on every keystroke's debounced save.
         let hasUnlinked = (try? app.store.cache.hasUnlinkedReferences(toPageNamed: pageName)) ?? false
 
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 18 * BlockRenderer.zoom) {
             if !backlinks.isEmpty {
-                linkedSection(backlinks)
+                VStack(alignment: .leading, spacing: 8 * BlockRenderer.zoom) {
+                    linkedSection(backlinks)
+                }
             }
             if hasUnlinked {
-                unlinkedSection()
+                VStack(alignment: .leading, spacing: 8 * BlockRenderer.zoom) {
+                    unlinkedSection()
+                }
             }
         }
+    }
+
+    /// Section titles and badges scale with content zoom, like the blocks.
+    private func sectionTitle(_ title: LocalizedStringKey) -> some View {
+        Text(title).font(.system(size: BlockRenderer.baseFontSize * 1.08, weight: .semibold))
+    }
+
+    /// Both section headers sit at the same level. Their contents sit one
+    /// level in, so the two read as peers.
+    private func sectionHeader(
+        _ title: LocalizedStringKey, expanded: Bool, count: Int?, fill: Color,
+        toggle: @escaping () -> Void
+    ) -> some View {
+        Button(action: toggle) {
+            HStack(spacing: 4 * BlockRenderer.zoom) {
+                ResultChevron(expanded: expanded)
+                sectionTitle(title)
+                if let count { countBadge(count, fill: fill).padding(.leading, 2) }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func countBadge(_ count: Int, fill: Color) -> some View {
+        Text(verbatim: "\(count)")   // a number, not a key
+            .font(.system(size: BlockRenderer.baseFontSize * 0.8))
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(Capsule().fill(fill))
     }
 
     // MARK: - Linked (SPEC §9.1)
 
     @ViewBuilder
     private func linkedSection(_ hits: [BacklinkHit]) -> some View {
-        let groups = PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName))
-
-        HStack(spacing: 6) {
-            Text("Linked References").font(.headline)
-            Text(verbatim: "\(hits.count)")   // a number, not a key
-                .font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+        sectionHeader("Linked References", expanded: linkedExpanded, count: hits.count,
+                      fill: Color.accentColor.opacity(0.2)) { linkedExpanded.toggle() }
+        if linkedExpanded {
+            BlockResultList(
+                groups: PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName)),
+                editable: true)
+                .padding(.leading, BlockResultList.levelIndent)
         }
-        // Lazy so a page with many backlinks only renders (and fetches
-        // breadcrumbs for) the rows currently scrolled into view.
-        LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(groups, id: \.key) { (sourcePage, groupHits) in
-                VStack(alignment: .leading, spacing: 4) {
-                    Button {
-                        toggleGroup(sourcePage)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: collapsedGroups.contains(sourcePage)
-                                ? "chevron.right" : "chevron.down")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.tertiary)
-                            Text(app.displayTitle(for: sourcePage))
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(Color(nsColor: .linkColor))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    if !collapsedGroups.contains(sourcePage) {
-                        ForEach(groupHits, id: \.blockID) { hit in
-                            BacklinkRow(hit: hit, contextPage: pageName)
-                                .padding(.leading, 14)
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
-    private func toggleGroup(_ key: String) {
-        if collapsedGroups.contains(key) { collapsedGroups.remove(key) }
-        else { collapsedGroups.insert(key) }
     }
 
     // MARK: - Unlinked (SPEC §9.2)
@@ -86,45 +86,39 @@ struct ReferencesSection: View {
             ? ((try? app.store.cache.unlinkedReferences(toPageNamed: pageName)) ?? [])
             : []
 
-        Button {
-            unlinkedExpanded.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: unlinkedExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.tertiary)
-                Text("Unlinked References").font(.headline)
-                if unlinkedExpanded {
-                    Text(verbatim: "\(hits.count)")   // a number, not a key
-                        .font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 6)
+        sectionHeader("Unlinked References", expanded: unlinkedExpanded,
+                      count: unlinkedExpanded ? hits.count : nil,
+                      fill: Color.secondary.opacity(0.15)) { unlinkedExpanded.toggle() }
 
         if unlinkedExpanded {
             if hits.isEmpty {
                 Text("No unlinked references.")
-                    .font(.caption).foregroundStyle(.tertiary)
-                    .padding(.leading, 20)
+                    .font(.system(size: BlockRenderer.baseFontSize * 0.85))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, BlockResultList.levelIndent)
             } else {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(hits, id: \.blockID) { hit in
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(app.displayTitle(for: hit.pageDisplayName))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(AttributedString(BlockRenderer.render(
-                                    content: hit.content, context: renderContext())))
+                                    .font(.system(size: BlockRenderer.baseFontSize * 0.85))
+                                    .foregroundStyle(.secondary)
+                                ResultBlockText(
+                                    text: BlockRenderer.render(
+                                        content: hit.content,
+                                        context: BlockResultList.renderContext(app)),
+                                    onLink: { url, sidebar in nav.openURL(url, inSidebar: sidebar) },
+                                    onImageResize: { index, width in
+                                        BlockResultList.resizeImage(app, block: hit.blockID,
+                                                                    imageIndex: index, width: width)
+                                    })
                             }
-                            Spacer()
                             Button("Link") { link(hit) }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                         }
-                        .padding(.leading, 14)
+                        .padding(.leading, BlockResultList.levelIndent)
                     }
                 }
             }
@@ -133,133 +127,16 @@ struct ReferencesSection: View {
 
     /// Wraps the matched text in `[[...]]` in the source block (SPEC §9.2).
     private func link(_ hit: SearchHit) {
-        var doc = app.document(for: hit.pageDisplayName)
-        guard let path = doc.blocks.path(to: hit.blockID) else { return }
         let pattern = "(?<![\\[\\w#])" + NSRegularExpression.escapedPattern(for: pageName) + "(?![\\]\\w])"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
         else { return }
-        doc.blocks.update(at: path) { block in
-            let content = block.content
+        let linked = BlockResultList.updateSourceBlock(app, hit.blockID, undoLabel: "Link Reference") {
+            content in
             let range = NSRange(content.startIndex..., in: content)
-            if let match = regex.firstMatch(in: content, range: range),
-               let r = Range(match.range, in: content) {
-                block.content = content.replacingCharacters(
-                    in: r, with: "[[\(pageName)]]")
-            }
+            guard let match = regex.firstMatch(in: content, range: range),
+                  let r = Range(match.range, in: content) else { return nil }
+            return content.replacingCharacters(in: r, with: "[[\(pageName)]]")
         }
-        app.commit(doc, undoLabel: "Link Reference")
-        app.flushPendingSaves()
-    }
-
-    private func renderContext() -> BlockRenderer.Context {
-        BlockRenderer.Context(
-            resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
-            assetsDir: app.store.assetsDir,
-            // A reference row is a snippet in a SwiftUI `Text`: nothing there
-            // draws a grid, so a table block shows its raw source (§5.2).
-            tables: false
-        )
-    }
-}
-
-/// One backlink block: breadcrumb + content, editable in place — edits write
-/// through to the source page (SPEC §9.1).
-struct BacklinkRow: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var nav: Navigator
-    let hit: BacklinkHit
-    let contextPage: String
-
-    @State private var editing = false
-    @State private var draft = ""
-    /// Fetched on appear (see `.task`) rather than up front for every backlink,
-    /// so only rows scrolled into view pay for the ancestor walk.
-    @State private var breadcrumb: [String] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if !breadcrumb.isEmpty {
-                Text(breadcrumb.map(snippet).joined(separator: " › "))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Circle().fill(Color.secondary.opacity(0.5))
-                    .frame(width: 5, height: 5)
-                    .padding(.top, 5)
-                if editing {
-                    // `as String` picks the verbatim initializer: an empty
-                    // label is not a key.
-                    TextField("" as String, text: $draft, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
-                        .onSubmit(commitEdit)
-                        .onExitCommand { editing = false }
-                } else {
-                    Text(AttributedString(BlockRenderer.render(
-                        content: hit.content,
-                        context: BlockRenderer.Context(
-                            resolveBlockRef: { [weak app] id in
-                                app?.store.resolveBlock(id)?.block.content
-                            },
-                            assetsDir: app.store.assetsDir,
-                            tables: false // raw source in a snippet row (§5.2)
-                        )
-                    )))
-                    .environment(\.openURL, OpenURLAction { url in
-                        nav.openURL(url, inSidebar: wantsSidebarClick())
-                        return .handled
-                    })
-                    .onTapGesture(count: 2) {
-                        draft = currentContent()
-                        editing = true
-                    }
-                    .help("Double-click to edit in place; click links to navigate")
-                }
-                Spacer(minLength: 0)
-                Button {
-                    nav.navigateToBlock(pageName: hit.pageDisplayName, blockID: hit.blockID,
-                                        content: hit.content, inSidebar: wantsSidebarClick())
-                } label: {
-                    Image(systemName: "arrow.up.forward.square")
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-                .help("Go to block")
-            }
-        }
-        .padding(.vertical, 2)
-        .task(id: hit.blockID) {
-            breadcrumb = (try? app.store.cache.breadcrumb(ofBlock: hit.blockID)) ?? []
-        }
-    }
-
-    private func currentContent() -> String {
-        guard let doc = optionalDoc(),
-              let path = doc.blocks.path(to: hit.blockID),
-              let block = doc.blocks.block(at: path) else { return hit.content }
-        return block.content
-    }
-
-    private func commitEdit() {
-        guard var doc = optionalDoc(),
-              let path = doc.blocks.path(to: hit.blockID) else {
-            editing = false
-            return
-        }
-        doc.blocks.update(at: path) { $0.content = draft }
-        app.commit(doc, undoLabel: "Edit Reference")
-        app.flushPendingSaves()
-        editing = false
-    }
-
-    private func optionalDoc() -> PageDocument? {
-        app.document(for: hit.pageDisplayName)
-    }
-
-    private func snippet(_ content: String) -> String {
-        let plain = BlockRenderer.plainPreview(content)
-        return plain.count > 30 ? String(plain.prefix(30)) + "…" : plain
+        if linked { app.flushPendingSaves() }
     }
 }
