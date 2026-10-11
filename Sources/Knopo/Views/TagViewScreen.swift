@@ -24,12 +24,14 @@ struct TagViewScreen: View {
             VStack(alignment: .leading, spacing: 12 * BlockRenderer.zoom) {
                 if !inPane {
                     HStack {
-                        Text(verbatim: "#\(tag)")   // the tag is data, not a key
-                            .font(.system(size: BlockRenderer.pageTitleFontSize, weight: .bold))
-                            .foregroundStyle(.purple)
-                        Text("\(hits.count) blocks")   // pluralized in Localization/en.lproj
-                            .font(.system(size: BlockRenderer.baseFontSize))
-                            .foregroundStyle(.secondary)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(verbatim: "#\(tag)")   // the tag is data, not a key
+                                .font(.system(size: BlockRenderer.pageTitleFontSize, weight: .bold))
+                                .foregroundStyle(.purple)
+                            Text("\(hits.count) blocks")   // pluralized in Localization/en.lproj
+                                .font(.system(size: BlockRenderer.baseFontSize))
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
                         ActionsMenu {
                             Button(app.store.config.isFavouriteTag(tag)
