@@ -2,6 +2,24 @@
 
 Notable changes per release, newest first. Dates are release dates.
 
+## v0.8.1 (2026-10-12)
+
+A maintenance release for references, block zooming, and the right sidebar.
+
+**Improved**
+- Linked References and tag results follow document order, nest matching child blocks, and omit repeated breadcrumbs. Journal days show newest first, then other pages alphabetically.
+- Text in Linked References and tag views resizes with `⌘+`/`⌘-`.
+- Page names, breadcrumbs, and bullets in Linked References and tag results open their targets. `⌘`/`Shift`-click opens them in the right sidebar.
+- Zooming into a block keeps it visible and editable above its children. Edits, including pastes and moves, stay within that subtree.
+- Inline block references omit heading markers and act as one link to their source. `⌘K` search, autocomplete, and breadcrumb previews omit them too.
+- New or reopened right-sidebar panes scroll into view without taking keyboard focus. `⌘`/`Shift`-clicking a block in `⌘K` search results, query results, Linked References, or a tag view opens its source page in the sidebar and scrolls to that block.
+- Opening Journal in the right sidebar shows today's journal page. The pane stays on that day when the graph reopens.
+
+**Fixes**
+- Right-sidebar panes open and resize faster on large pages.
+- Visible block references refresh after source edits are saved, without moving focus or the caret.
+- Tag headings align with their block counts.
+
 ## v0.8.0 (2026-10-01)
 
 PDF imports and Quick Look, with embedded tables and editing refinements.
