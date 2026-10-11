@@ -293,6 +293,52 @@ import KnopoCore
         #expect(nav.rightPanes[0].target == .tag("todo"))
     }
 
+    /// The journal home opens in a pane as today's page, titled by its date.
+    @MainActor
+    @Test func journalHomeOpensTodayInAPane() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-panes-journal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let app = AppState(store: try GraphStore(root: root))
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+        let today = JournalDate.today().pageName
+
+        nav.openInRightSidebar(.journalHome)
+        #expect(nav.rightPanes.map(\.target) == [.page(name: today)])
+        // Today's page by name reuses that pane.
+        nav.openInRightSidebar(.page(name: today))
+        #expect(nav.rightPanes.count == 1)
+    }
+
+    /// A Journal pane saved by an earlier build reopens as today's page, and
+    /// that date is saved so later launches keep the same day. Other saved
+    /// panes stay as they were.
+    @MainActor
+    @Test func restoringALegacyJournalPaneSavesItsDate() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knopo-panes-legacy-journal-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = try GraphStore(root: root)
+        // A zoom on a block that can't be found doesn't restore, but stays saved.
+        let missingZoom = RightPane(target: .page(name: "", zoom: UUID())).encoded
+        try store.updateConfig {
+            $0.rightPanes = [RightPane(target: .journalHome).encoded,
+                             missingZoom,
+                             RightPane(target: .page(name: "Alpha"), collapsed: true).encoded]
+        }
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        let nav = Navigator(app: app)
+
+        let today = RightPane(target: .page(name: JournalDate.today().pageName))
+        let alpha = RightPane(target: .page(name: "Alpha"), collapsed: true)
+        #expect(nav.rightPanes == [today, alpha])
+        #expect(store.config.rightPanes == [today.encoded, missingZoom, alpha.encoded])
+    }
+
     /// Duplicates persisted by earlier builds collapse to one pane on restore.
     @MainActor
     @Test func restoringPanesDropsDuplicates() throws {

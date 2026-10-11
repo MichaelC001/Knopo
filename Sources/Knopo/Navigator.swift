@@ -76,9 +76,20 @@ final class Navigator: ObservableObject {
         // stored-property init so `resolve` (which reads `app`) is available.
         // Duplicates saved by earlier builds are dropped here, keeping the
         // one-pane-per-target invariant that `openInRightSidebar` now holds.
-        rightPanes = app.store.config.rightPanes
+        // Earlier builds saved a Journal pane. Save today's date in its place,
+        // so the pane keeps that day on later launches. Only those entries
+        // change: a pane that fails to restore stays saved.
+        let saved = app.store.config.rightPanes
+        let migrated = saved.map { encoded in
+            guard let pane = RightPane(encoded: encoded), pane.target == .journalHome
+            else { return encoded }
+            return RightPane(target: .page(name: JournalDate.today().pageName),
+                             collapsed: pane.collapsed).encoded
+        }
+        if migrated != saved { app.persistRightPanes(migrated) }
+        rightPanes = migrated
             .compactMap(RightPane.init(encoded:))
-            .compactMap { pane in resolve(pane.target).map { RightPane(target: $0, collapsed: pane.collapsed) } }
+            .compactMap { pane in paneTarget(pane.target).map { RightPane(target: $0, collapsed: pane.collapsed) } }
             .deduplicatedByTarget()
         restored = true
     }
@@ -129,7 +140,7 @@ final class Navigator: ObservableObject {
     /// card: the sidebar is a set of reference views, and two editors over one
     /// document would alias.
     func openInRightSidebar(_ target: NavTarget, reveal: Bool = true) {
-        guard let resolved = resolve(target) else { return }
+        guard let resolved = paneTarget(target) else { return }
         rightPaneNavigationToken += 1
         defer { if reveal { rightPaneRevealToken += 1 } }
         guard let i = rightPanes.firstIndex(where: { $0.target.showsSame(as: resolved) }) else {
@@ -277,6 +288,13 @@ final class Navigator: ObservableObject {
     func findPrevious() { findStepForward = false; findStepToken += 1 }
 
     /// Block targets arrive with an empty page name; resolve via the graph.
+    /// A pane shows one page, so the journal home opens as today's page.
+    /// The pane then has the date as its title and stays on that day.
+    private func paneTarget(_ target: NavTarget) -> NavTarget? {
+        if case .journalHome = target { return .page(name: JournalDate.today().pageName) }
+        return resolve(target)
+    }
+
     private func resolve(_ target: NavTarget) -> NavTarget? {
         if case .page(let name, let zoom) = target, name.isEmpty, let zoom {
             guard let pageName = app.resolvePageName(forZoom: zoom) else { return nil }

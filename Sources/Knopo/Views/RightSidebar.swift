@@ -196,8 +196,8 @@ struct RightSidebar: View {
             // pane stack scrolls together — no nested/double scrolling.
             PageScreen(pageName: name, zoom: zoom, inPane: true, initialOutlineWidth: outlineWidth)
         case .journalHome:
-            // In a pane, the journal is just today's page — not the full
-            // infinite-scroll home — and sizes to content like other pages.
+            // The navigator opens the journal home as today's page, so a pane
+            // never holds this target. Show today's page if one does.
             PageScreen(pageName: JournalDate.today().pageName, inPane: true, initialOutlineWidth: outlineWidth)
         case .tag(let tag):
             // These bring their own ScrollView, so bound their height here.
