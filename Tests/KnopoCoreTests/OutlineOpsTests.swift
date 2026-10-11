@@ -20,10 +20,53 @@ import Foundation
         let blocks = forest("- a\n  - a1\n    - deep\n  - a2\n- b\n")
         let zoomID = blocks[0].id
         let rows = OutlineOps.visibleRows(in: blocks, zoomRoot: zoomID)
-        expectEqual(rows.map(\.block.content), ["a1", "deep", "a2"])
+        // The root is the first row, its subtree one level in.
+        expectEqual(rows.map(\.block.content), ["a", "a1", "deep", "a2"])
+        expectEqual(rows.map(\.depth), [0, 1, 2, 1])
         // Paths remain absolute so edits write to the right place.
-        expectEqual(rows[0].path, [0, 0])
-        expectEqual(rows[1].path, [0, 0, 0])
+        expectEqual(rows[0].path, [0])
+        expectEqual(rows[1].path, [0, 0])
+        expectEqual(rows[2].path, [0, 0, 0])
+    }
+
+    @Test func zoomIntoAChildlessOrCollapsedBlockShowsTheBlock() {
+        var blocks = forest("- a\n  - a1\n- leaf\n")
+        expectEqual(OutlineOps.visibleRows(in: blocks, zoomRoot: blocks[1].id).map(\.block.content),
+                    ["leaf"])
+        blocks[0].collapsed = true
+        expectEqual(OutlineOps.visibleRows(in: blocks, zoomRoot: blocks[0].id).map(\.block.content),
+                    ["a", "a1"])
+    }
+
+    @Test func splitZoomRootKeepsTheNewBlockInside() {
+        var blocks = forest("- a\n- root text\n- b\n")
+        let mid = OutlineOps.splitZoomRoot([1], at: 4, in: &blocks)
+        expectEqual(blocks.map(\.content), ["a", "root", "b"])
+        expectEqual(blocks[1].children.map(\.content), [" text"])
+        expectEqual(blocks[1].children[0].id, mid)
+
+        // At the start the root keeps its text and gets an empty first child.
+        let start = OutlineOps.splitZoomRoot([1], at: 0, in: &blocks)
+        expectEqual(blocks[1].content, "root")
+        expectEqual(blocks[1].children.map(\.content), ["", " text"])
+        expectEqual(blocks[1].children[0].id, start)
+    }
+
+    @Test func zoomScopeRejectsEditsThatLeaveTheSubtree() {
+        let before = forest("- a\n- root\n  - c1\n  - c2\n- b\n")
+        let root = before[1].id
+        func check(_ edit: (inout [Block]) -> Void) -> Bool {
+            var after = before
+            edit(&after)
+            return OutlineOps.keepsZoomScope(before: before, after: after, root: root)
+        }
+        expectTrue(check { OutlineOps.indent([1, 1], in: &$0) })      // c2 under c1
+        expectTrue(check { _ = OutlineOps.delete([1, 0], in: &$0) })  // delete c1
+        expectTrue(check { _ = OutlineOps.split([1, 0], at: 1, in: &$0) })
+        expectFalse(check { OutlineOps.outdent([1, 0], in: &$0) })    // c1 leaves
+        expectFalse(check { OutlineOps.indent([1], in: &$0) })        // the root moves
+        expectFalse(check { _ = OutlineOps.delete([1], in: &$0) })    // the root goes
+        expectFalse(check { $0.insert(Block(content: "new"), at: [2]) }) // new sibling of root
     }
 
     @Test func splitMidContent() {

@@ -175,20 +175,19 @@ struct BreadcrumbBar: View {
                 nav.navigate(to: .page(name: pageName))
             }
             .buttonStyle(.link)
-            if let zoom, let path = doc.blocks.path(to: zoom) {
-                ForEach(1...path.count, id: \.self) { i in
+            // Ancestors only: the zoomed block itself is the outline's first row.
+            if let zoom, let path = doc.blocks.path(to: zoom), path.count > 1 {
+                ForEach(1..<path.count, id: \.self) { i in
                     let ancestorPath = Array(path.prefix(i))
                     if let block = doc.blocks.block(at: ancestorPath) {
                         Text(verbatim: "›").foregroundStyle(.tertiary)   // separator glyph
                         Button {
-                            if i == path.count { return }
                             nav.navigate(to: .page(name: pageName, zoom: block.id))
                         } label: {
                             Text(snippet(block.content))
                                 .lineLimit(1)
                         }
                         .buttonStyle(.link)
-                        .disabled(i == path.count)
                     }
                 }
             }

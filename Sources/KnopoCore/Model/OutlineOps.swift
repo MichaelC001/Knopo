@@ -15,19 +15,23 @@ public enum OutlineOps {
     }
 
     /// Flattens the forest for display. When `zoomRoot` is set, that block
-    /// becomes the temporary page root (its subtree only, itself at depth -1
-    /// shown as the zoom header by the UI; rows start at its children).
+    /// becomes the temporary page root: its own row first at depth 0, then its
+    /// subtree. Its children show even when it is collapsed.
     public static func visibleRows(
         in blocks: [Block], zoomRoot: UUID? = nil
     ) -> [VisibleRow] {
         var scope: [Block] = blocks
         var basePath: [Int] = []
+        var baseDepth = 0
+        var rows: [VisibleRow] = []
         if let zoomRoot, let path = blocks.path(to: zoomRoot),
            let root = blocks.block(at: path) {
+            rows.append(VisibleRow(block: root, depth: 0, path: path,
+                                   hasChildren: !root.children.isEmpty))
             scope = root.children
             basePath = path
+            baseDepth = 1
         }
-        var rows: [VisibleRow] = []
         func walk(_ list: [Block], depth: Int, prefix: [Int]) {
             for (i, block) in list.enumerated() {
                 let path = prefix + [i]
@@ -40,8 +44,49 @@ public enum OutlineOps {
                 }
             }
         }
-        walk(scope, depth: 0, prefix: basePath)
+        walk(scope, depth: baseDepth, prefix: basePath)
         return rows
+    }
+
+    /// Whether an edit made in a zoomed view keeps to its subtree. The root must
+    /// stay where it is. A block from the subtree, or a new block, must not end
+    /// up elsewhere on the page, or it would vanish from the view. Deleting a
+    /// block is fine.
+    public static func keepsZoomScope(before: [Block], after: [Block], root: UUID) -> Bool {
+        guard let rootPath = before.path(to: root), after.path(to: root) == rootPath,
+              let oldRoot = before.block(at: rootPath),
+              let newRoot = after.block(at: rootPath) else { return false }
+        func ids(_ list: [Block]) -> Set<UUID> {
+            Set(list.flatMap { [$0.id] + ids($0.children) })
+        }
+        let oldInside = ids(oldRoot.children)
+        let newInside = ids(newRoot.children)
+        let oldAll = ids(before)
+        for id in ids(after) where id != root && !newInside.contains(id) {
+            if oldInside.contains(id) || !oldAll.contains(id) { return false }
+        }
+        return true
+    }
+
+    /// Enter in a zoomed view's root. Splits like `split`, but the new block is
+    /// always the root's first child, so it stays in the view. At the very start
+    /// of the root the root keeps its text and the new child is empty.
+    /// Returns the new block's id.
+    public static func splitZoomRoot(
+        _ path: [Int], at offset: Int, in blocks: inout [Block]
+    ) -> UUID? {
+        guard let block = blocks.block(at: path) else { return nil }
+        let content = block.content
+        let idx = content.index(content.startIndex, offsetBy: min(max(offset, 0), content.count))
+        let head = String(content[..<idx])
+        let tail = String(content[idx...])
+        let new = Block(content: head.isEmpty ? "" : tail)
+        blocks.update(at: path) {
+            if !head.isEmpty { $0.content = head }
+            $0.children.insert(new, at: 0)
+            $0.collapsed = false
+        }
+        return new.id
     }
 
     /// Inserts a new empty block as the next sibling (Enter). If the reference

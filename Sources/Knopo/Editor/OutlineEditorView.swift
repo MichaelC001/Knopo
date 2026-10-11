@@ -724,8 +724,8 @@ final class OutlineEditorController: NSObject {
         // Otherwise once per presentation: `present` runs on every data change,
         // and re-focusing would yank the caret back after a click elsewhere.
         guard explicit || autoFocusedPresentation != presentationKey else { return }
-        // Nothing at all to show — an emptied file, a preamble-only file, or a
-        // zoom into a childless block. Give the page the block it needs, so every
+        // Nothing at all to show — an emptied file or a preamble-only file. (A
+        // zoom always shows its root.) Give the page the block it needs, so every
         // empty outline looks the same: one blank block with the hint in it.
         if rows.isEmpty {
             autoFocusedPresentation = presentationKey
@@ -795,20 +795,12 @@ final class OutlineEditorController: NSObject {
         content.isEmpty && !hasChildren && !isFocused && !isOnlyRow
     }
 
-    /// Creates the block an empty outline needs — a child of the zoom root when
-    /// zoomed. In memory only (no `commit`), so opening a page never writes to it;
-    /// the block reaches disk once you type in it.
+    /// Creates the block an empty outline needs. In memory only (no `commit`), so
+    /// opening a page never writes to it; the block reaches disk once you type in it.
     private func materialiseFirstBlock() -> UUID {
         var doc = app.document(for: pageName)
         let block = Block(content: "")
-        if let zoom, let path = doc.blocks.path(to: zoom) {
-            doc.blocks.update(at: path) {
-                $0.children.append(block)
-                $0.collapsed = false
-            }
-        } else {
-            doc.blocks.append(block)
-        }
+        doc.blocks.append(block)
         app.store.updatePage(doc)
         return block.id
     }
@@ -1930,7 +1922,7 @@ final class OutlineEditorController: NSObject {
     /// Selects every visible block. Returns false when there is nothing to select,
     /// leaving `selectAll:` to AppKit.
     @discardableResult
-    private func selectAllBlocks() -> Bool {
+    func selectAllBlocks() -> Bool {
         guard focusedBlockID == nil, !rows.isEmpty else { return false }
         setSelection(Set(rows.indices), anchor: 0, active: rows.count - 1)
         return true
@@ -2008,22 +2000,25 @@ final class OutlineEditorController: NSObject {
     /// make — as one undo step, so one undo brings the blocks back. The pasteboard
     /// is written only once the removal has gone ahead: declining the "referenced
     /// elsewhere" prompt leaves both the page and the clipboard as they were.
-    private func cutSelection() {
-        guard let markdown = selectionMarkdown() else { return }
+    func cutSelection(to pasteboard: NSPasteboard = .general) {
+        // A zoom root survives the removal, so it stays off the clipboard too.
+        guard let markdown = selectionMarkdown(includingZoomRoot: false) else { return }
         guard deleteSelection(labelledCut: true) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(markdown, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
     }
 
     /// The selected blocks as Markdown, or nil when there is nothing to write.
-    private func selectionMarkdown() -> String? {
+    func selectionMarkdown(includingZoomRoot: Bool = true) -> String? {
         // Take exactly the selected rows (re-based to the shallowest one's
         // depth), not each block's whole subtree — selecting a parent plus one
         // child must not drag in the parent's *unselected* children. Exception:
         // a collapsed block's children are hidden and can't be selected, so its
         // full subtree is included.
         let doc = app.document(for: pageName)
-        let selected = selectedRows.sorted().filter { rows.indices.contains($0) }
+        let selected = selectedRows.sorted().filter {
+            rows.indices.contains($0) && (includingZoomRoot || rows[$0].block.id != zoom)
+        }
         guard let baseDepth = selected.map({ rows[$0].depth }).min() else { return nil }
         var out = ""
         for row in selected {
@@ -2031,7 +2026,9 @@ final class OutlineEditorController: NSObject {
             // descendant was just edited — see `copySubtreeMarkdown`).
             guard let block = doc.blocks.block(id: rows[row].block.id) else { continue }
             let pad = String(repeating: "  ", count: max(0, rows[row].depth - baseDepth))
-            if !block.children.isEmpty, block.collapsed {
+            // The zoom root shows its children even when collapsed. They are
+            // selectable rows there, so they must not be copied twice.
+            if !block.children.isEmpty, block.collapsed, block.id != zoom {
                 for line in OutlineOps.copyMarkdown(block).components(separatedBy: "\n")
                 where !line.isEmpty {
                     out += pad + line + "\n"
@@ -2054,14 +2051,13 @@ final class OutlineEditorController: NSObject {
         guard !pasted.isEmpty, let anchorRow = topMostSelectedRows().last,
               rows.indices.contains(anchorRow) else { return }
         var doc = app.document(for: pageName)
-        guard var insertAt = doc.blocks.path(to: rows[anchorRow].block.id) else { return }
-        insertAt[insertAt.count - 1] += 1 // after the anchor block (and its subtree)
+        guard let insertAt = pastePath(after: rows[anchorRow].block.id, in: doc.blocks) else { return }
         for (i, block) in pasted.enumerated() {
             var p = insertAt
             p[p.count - 1] += i
             doc.blocks.insert(block, at: p)
         }
-        commitStructural(doc, label: "Paste")
+        guard commitStructural(doc, label: "Paste") else { return }
         clearSelection()
         reloadAndFocus(nil, selection: nil)
         let pastedIDs = Set(pasted.map(\.id))
@@ -2069,12 +2065,25 @@ final class OutlineEditorController: NSObject {
         if let anchor = newSel.min() { setSelection(newSel, anchor: anchor) }
     }
 
+    /// Where blocks pasted after `id` go: right after it and its subtree. After a
+    /// zoom root that would be outside the view, so they become its first children.
+    private func pastePath(after id: UUID, in blocks: [Block]) -> [Int]? {
+        guard var path = blocks.path(to: id) else { return nil }
+        if id == zoom { return path + [0] }
+        path[path.count - 1] += 1
+        return path
+    }
+
     /// Removes the selected blocks. Returns false when there was nothing to remove
     /// or the reference prompt was declined, so `cutSelection` can leave the
     /// pasteboard alone.
     @discardableResult
-    private func deleteSelection(labelledCut: Bool = false) -> Bool {
-        let ids = selectedRows.sorted().compactMap { rows.indices.contains($0) ? rows[$0].block.id : nil }
+    func deleteSelection(labelledCut: Bool = false) -> Bool {
+        // A zoom root stays: removing it would empty the view. Its selected
+        // children are removed as usual.
+        let ids = selectedRows.sorted()
+            .compactMap { rows.indices.contains($0) ? rows[$0].block.id : nil }
+            .filter { $0 != zoom }
         guard !ids.isEmpty else { return false }
         // Aggregate incoming block-references over every selected subtree (§7.4).
         var subtreeIDs: [UUID] = []
@@ -2090,7 +2099,8 @@ final class OutlineEditorController: NSObject {
         var doc = app.document(for: pageName)
         Self.removeBlocks(Set(ids), from: &doc.blocks)
         if doc.blocks.isEmpty { doc.blocks = [Block(content: "")] } // keep one block
-        commitStructural(doc, label: Self.removalLabel(count: ids.count, isCut: labelledCut))
+        guard commitStructural(doc, label: Self.removalLabel(count: ids.count, isCut: labelledCut))
+        else { return false }
         clearSelection()
         reloadAndFocus(nil, selection: nil)
         return true
@@ -2150,7 +2160,7 @@ final class OutlineEditorController: NSObject {
                          : OutlineOps.indentRun(paths, in: &doc.blocks)
         }
         guard ok else { return }
-        commitStructural(doc, label: outdent ? "Outdent" : "Indent")
+        guard commitStructural(doc, label: outdent ? "Outdent" : "Indent") else { return }
         reloadAndFocus(nil, selection: nil)
         let newSelection = Set(rows.indices.filter { selectedIDs.contains(rows[$0].block.id) })
         if !newSelection.isEmpty { setSelection(newSelection, anchor: newSelection.min()) }
@@ -2172,7 +2182,7 @@ final class OutlineEditorController: NSObject {
         let paths = ids.compactMap { doc.blocks.path(to: $0) }
         guard paths.count == ids.count,
               OutlineOps.moveRun(paths, by: delta, in: &doc.blocks) else { return }
-        commitStructural(doc, label: ids.count == 1 ? "Move Block" : "Move Blocks")
+        guard commitStructural(doc, label: ids.count == 1 ? "Move Block" : "Move Blocks") else { return }
         reloadAndFocus(nil, selection: nil)
         let newSelection = Set(rows.indices.filter { selectedIDs.contains(rows[$0].block.id) })
         setSelection(newSelection, anchor: newSelection.min())
@@ -2283,11 +2293,19 @@ final class OutlineEditorController: NSObject {
     /// the block was focused are first flushed into a *separate* undo step, so
     /// undoing the op reverts only the op — not the typing that preceded it
     /// (each Cmd+Z undoes one action, SPEC §13).
-    private func commitStructural(_ doc: PageDocument, label: String) {
-        flushEditSessionUndo()
+    /// Returns false, and commits nothing, for an edit that would leave a
+    /// zoomed view's subtree (see `OutlineOps.keepsZoomScope`).
+    @discardableResult
+    private func commitStructural(_ doc: PageDocument, label: String) -> Bool {
         let before = app.document(for: pageName)
-        app.commit(doc, undoLabel: label, before: before)
+        if let zoom, !OutlineOps.keepsZoomScope(before: before.blocks, after: doc.blocks, root: zoom) {
+            NSSound.beep()
+            return false
+        }
+        flushEditSessionUndo()
+        app.commit(doc, undoLabel: label, before: app.document(for: pageName))
         editSessionBefore = doc
+        return true
     }
 
     /// Closes the current text-editing session into a single undo step. Plain
@@ -2610,7 +2628,7 @@ final class OutlineEditorController: NSObject {
                 block.properties.append(BlockProperty(key: BlockColor.propertyKey, value: name))
             }
         }
-        commitStructural(doc, label: "Background Color")
+        guard commitStructural(doc, label: "Background Color") else { return }
         reloadAndFocus(focusedBlockID, selection: focusedBlockID != nil ? editor.selectedRange() : nil)
     }
 
@@ -2719,7 +2737,7 @@ final class OutlineEditorController: NSObject {
         let wasFocused = focusedBlockID == id
         let previousID = index > 0 ? rows[index - 1].block.id : nil
         _ = OutlineOps.delete(path, in: &doc.blocks)
-        commitStructural(doc, label: "Delete Block")
+        guard commitStructural(doc, label: "Delete Block") else { return }
         reloadAndFocus(wasFocused ? nil : focusedBlockID, selection: nil)
         if wasFocused, let previousID,
            let prev = app.document(for: pageName).blocks.block(id: previousID) {
@@ -2874,10 +2892,12 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
         let blockColor = model.block.properties
             .first { $0.key == BlockColor.propertyKey }
             .flatMap { BlockColor(rawValue: $0.value) }?.background
+        // A zoom root always shows its children, so it has nothing to fold.
+        let isZoomRoot = model.block.id == zoom
         cell.configure(
             depth: model.depth,
-            hasChildren: model.hasChildren,
-            collapsed: model.block.collapsed,
+            hasChildren: model.hasChildren && !isZoomRoot,
+            collapsed: model.block.collapsed && !isZoomRoot,
             isQuote: isQuote,
             isCode: isCode,
             isEmbed: isEmbed,
@@ -2996,7 +3016,9 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             doc.blocks.update(at: parentPath) { $0.collapsed = false }
         }
         let movedIDs = Set(draggingIDs)
-        commitStructural(doc, label: movedIDs.count == 1 ? "Move Block" : "Move Blocks")
+        guard commitStructural(doc, label: movedIDs.count == 1 ? "Move Block" : "Move Blocks") else {
+            return false
+        }
         clearSelection()
         reloadAndFocus(nil, selection: nil)
         let newSelection = Set(rows.indices.filter { movedIDs.contains(rows[$0].block.id) })
@@ -3023,7 +3045,8 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
            let parentPath = doc.blocks.path(to: rows[row].block.id) {
             doc.blocks.update(at: parentPath) { $0.collapsed = false }
         }
-        commitStructural(doc, label: blocks.count == 1 ? "Insert File" : "Insert Files")
+        guard commitStructural(doc, label: blocks.count == 1 ? "Insert File" : "Insert Files")
+        else { return false }
         clearSelection()
         reloadAndFocus(nil, selection: nil)
         return true
@@ -3082,10 +3105,12 @@ extension OutlineEditorController: BlockEditorActions {
         let contentUTF16 = (block.content as NSString).length
         let caret = min(max(offset, 0), contentUTF16)
         let characterOffset = Self.characterOffset(forUTF16Offset: caret, in: block.content)
-        guard let newID = OutlineOps.split(path, at: characterOffset, in: &doc.blocks) else {
+        // The zoom root's new block goes inside it, so it stays in view.
+        let split = id == zoom ? OutlineOps.splitZoomRoot : OutlineOps.split
+        guard let newID = split(path, characterOffset, &doc.blocks) else {
             return
         }
-        commitStructural(doc, label: "New Block")
+        guard commitStructural(doc, label: "New Block") else { return }
         reloadAndFocus(newID, selection: NSRange(location: 0, length: 0))
     }
 
@@ -3118,7 +3143,7 @@ extension OutlineEditorController: BlockEditorActions {
         let delta = (new as NSString).length - (old as NSString).length
         let caret = max(0, editor.selectedRange().location + delta)
         doc.blocks.update(at: path) { $0.content = new }
-        commitStructural(doc, label: "Toggle Todo")
+        guard commitStructural(doc, label: "Toggle Todo") else { return }
         reloadAndFocus(id, selection: NSRange(location: caret, length: 0))
     }
 
@@ -3127,7 +3152,7 @@ extension OutlineEditorController: BlockEditorActions {
         let selection = editor.selectedRange()
         var doc = app.document(for: pageName)
         guard let path = doc.blocks.path(to: id), op(path, &doc.blocks) else { return }
-        commitStructural(doc, label: label)
+        guard commitStructural(doc, label: label) else { return }
         reloadAndFocus(id, selection: selection)
     }
 
@@ -3152,7 +3177,7 @@ extension OutlineEditorController: BlockEditorActions {
               let (receiver, characterOffset) = OutlineOps.mergeWithPrevious(
                   path, in: &doc.blocks
               ) else { return }
-        commitStructural(doc, label: "Merge Blocks")
+        guard commitStructural(doc, label: "Merge Blocks") else { return }
         let content = doc.blocks.block(id: receiver)?.content ?? ""
         let caret = Self.utf16Offset(forCharacterOffset: characterOffset, in: content)
         reloadAndFocus(receiver, selection: NSRange(location: caret, length: 0))
@@ -3172,7 +3197,7 @@ extension OutlineEditorController: BlockEditorActions {
         // forward delete: its content appends here and the caret stays at the join.
         guard let nextPath = doc.blocks.path(to: next.block.id),
               OutlineOps.mergeWithPrevious(nextPath, in: &doc.blocks) != nil else { return }
-        commitStructural(doc, label: "Merge Blocks")
+        guard commitStructural(doc, label: "Merge Blocks") else { return }
         reloadAndFocus(id, selection: NSRange(location: caretOffset, length: 0))
     }
 
@@ -3231,6 +3256,15 @@ extension OutlineEditorController: BlockEditorActions {
               let current = doc.blocks.block(at: path) else { return }
         let pasted = OutlineOps.blocksFromPasted(text)
         guard !pasted.isEmpty, let last = pasted.last else { return }
+        if id == zoom {
+            pasteIntoZoomRoot(pasted, at: path, in: &doc)
+            guard commitStructural(doc, label: "Paste") else { return }
+            // The first pasted block may have become the root itself.
+            let focus = doc.blocks.block(id: last.id) ?? doc.blocks.block(at: path)
+            let caret = ((focus?.content ?? "") as NSString).length
+            reloadAndFocus(focus?.id ?? id, selection: NSRange(location: caret, length: 0))
+            return
+        }
         var insertAt = path
         if current.content.isEmpty && current.children.isEmpty {
             // Pasting into an empty block replaces it.
@@ -3243,9 +3277,28 @@ extension OutlineEditorController: BlockEditorActions {
             p[p.count - 1] += i
             doc.blocks.insert(block, at: p)
         }
-        commitStructural(doc, label: "Paste") // one undo step (SPEC §13)
+        guard commitStructural(doc, label: "Paste") else { return } // one undo step (SPEC §13)
         let caret = (last.content as NSString).length
         reloadAndFocus(last.id, selection: NSRange(location: caret, length: 0))
+    }
+
+    /// Pastes into the zoom root and keeps everything inside it. An empty root
+    /// takes the first block's text and properties and keeps its id. The other
+    /// blocks become the root's first children.
+    private func pasteIntoZoomRoot(_ pasted: [Block], at path: [Int], in doc: inout PageDocument) {
+        guard let root = doc.blocks.block(at: path) else { return }
+        var inside = pasted
+        if root.content.isEmpty, let first = pasted.first {
+            inside = first.children + pasted.dropFirst()
+            doc.blocks.update(at: path) { root in
+                root.content = first.content
+                // A pasted property wins over the root's own value for the same key.
+                let pastedKeys = Set(first.properties.map(\.key))
+                root.properties = root.properties.filter { !pastedKeys.contains($0.key) }
+                    + first.properties
+            }
+        }
+        doc.blocks.update(at: path) { $0.children.insert(contentsOf: inside, at: 0) }
     }
 
     func editorPersistPastedBlockReference(_ id: UUID) {
