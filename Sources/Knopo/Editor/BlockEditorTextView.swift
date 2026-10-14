@@ -54,9 +54,8 @@ final class BlockEditorTextView: NSTextView {
     /// when that actually changes (TextKit repaints glyphs without calling `draw`).
     private var didDrawHint = false
 
-    /// Caret position right after a `[[Page]]` completion's auto-inserted
-    /// trailing space. Consumed on the next keystroke: a plain Enter there
-    /// removes the space before splitting; anything else keeps it.
+    /// Caret position after a completion's auto-inserted space. Consumed on
+    /// the next keystroke. Enter or closing punctuation removes the space.
     var pendingTrailingSpaceCaret: Int?
 
     private var isSettingContent = false
@@ -323,18 +322,15 @@ final class BlockEditorTextView: NSTextView {
             return
         }
         if let autocomplete, autocomplete.handleKeyDown(event) { return }
-        // The auto-space from a `[[Page]]` completion is one-shot: any key clears
-        // it; a plain Enter at that caret removes it before splitting.
+        // Remember the completion's auto-space for this keystroke only.
         let pendingSpaceCaret = pendingTrailingSpaceCaret
         pendingTrailingSpaceCaret = nil
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        // The auto-space after a `[[Page]]` completion helps when the next thing
-        // is a word, but not when it's closing punctuation — drop it so the mark
-        // sits against the reference ("[[Page]]," not "[[Page]] ,"). `super`
-        // then types the punctuation at the reclaimed caret.
+        // Keep the completion's space before a word, but remove it before
+        // closing punctuation. The normal key handler then inserts the mark.
         if let spaceCaret = pendingSpaceCaret,
-           flags.isSubset(of: [.shift]),
-           let chars = event.characters, chars.count == 1, ",.;:!?".contains(chars) {
+           flags.isSubset(of: [.shift, .capsLock]),
+           let chars = event.characters, chars.count == 1, ",.;:!?)".contains(chars) {
             removePendingTrailingSpace(at: spaceCaret)
         }
         switch event.keyCode {

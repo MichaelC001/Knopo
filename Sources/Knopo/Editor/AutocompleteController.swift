@@ -371,8 +371,8 @@ final class AutocompleteController: NSObject {
         }
         // After completing any reference/tag (`[[Page]]`, `#tag`, `((block))`),
         // add a trailing space so you can keep typing; it's removed if the very
-        // next key is Enter (see BlockEditorTextView). Skipped only when
-        // completing inside a pre-bracketed skeleton (`{{embed [[]]}}` /
+        // next key is Enter or closing punctuation (see BlockEditorTextView).
+        // Skip it inside a pre-bracketed skeleton (`{{embed [[]]}}` /
         // `{{embed (())}}`), where a space inside the braces would be wrong.
         let trailingSpace = absorbedClose ? "" : " "
         dismiss()
