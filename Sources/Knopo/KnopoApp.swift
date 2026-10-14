@@ -265,12 +265,16 @@ private struct GraphCommands: Commands {
     private var graph: GraphActions? { focusedGraph ?? activeGraph.actions }
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            // The window controller creates and tabs the new scene. Adding it
-            // again can put tab labels in the wrong order.
             Button("New Tab") {
                 guard let current = NSApp.keyWindow,
                       let controller = current.windowController else { return }
                 controller.newWindowForTab(nil)
+                // Attach the new window if SwiftUI left it separate. Inserting
+                // an existing tab again can put tab labels in the wrong order.
+                if let added = NSApp.keyWindow, added !== current,
+                   current.tabbedWindows?.contains(where: { $0 === added }) != true {
+                    current.addTabbedWindow(added, ordered: .above)
+                }
             }
             .keyboardShortcut("t", modifiers: .command)
             Button("Open Graph…") { graph?.openGraph() }
