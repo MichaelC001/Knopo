@@ -11,8 +11,8 @@ import Testing
         #expect(GraphManager.rootForNewWindow(inheriting: active) == active)
     }
 
-    /// At launch there is nothing to inherit from, so the stored default wins.
-    @Test func withNoWindowTheStoredDefaultDecides() {
+    /// Without an active graph, use the environment or saved default.
+    @Test func withNoWindowTheDefaultRootDecides() {
         #expect(GraphManager.rootForNewWindow(inheriting: nil) == GraphManager.defaultRoot())
     }
 }

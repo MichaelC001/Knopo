@@ -146,17 +146,28 @@ import Testing
             "Jun 10th, 2026")
     }
 
-    @Test func cachedFormattersAreSafeAcrossTasks() async {
-        let format = JournalDateFormat(rawValue: "EEEE, MMMM d{ordinal}, yyyy")
-        let day = june
-        let values = await withTaskGroup(of: String.self, returning: [String].self) { group in
-            for _ in 0..<200 {
-                group.addTask { format.string(from: day, locale: Locale(identifier: "en_US")) }
+    @Test func cachedFormattersKeepConcurrentRequestsSeparate() async {
+        let cases: [(pattern: String, day: JournalDate, locale: String, expected: String)] = [
+            ("MMMM d{ordinal}, yyyy", june, "en_US", "June 10th, 2026"),
+            ("MMMM d{ordinal}, yyyy", january, "en_US", "January 10th, 2026"),
+            ("MMMM d{ordinal}, yyyy", june, "de_DE", "Juni 10., 2026"),
+            ("d{ordinal}", JournalDate(year: 2026, month: 1, day: 21)!, "en_US", "21st"),
+            ("numeric", june, "en_US", "6/10/2026"),
+            ("numeric", january, "de_DE", "10.1.2026"),
+        ]
+        await withTaskGroup(of: (String, String).self) { group in
+            for _ in 0..<40 {
+                for item in cases {
+                    group.addTask {
+                        let actual = JournalDateFormat(rawValue: item.pattern)
+                            .string(from: item.day, locale: Locale(identifier: item.locale))
+                        return (actual, item.expected)
+                    }
+                }
             }
-            var values: [String] = []
-            for await value in group { values.append(value) }
-            return values
+            for await (actual, expected) in group {
+                expectEqual(actual, expected)
+            }
         }
-        expectEqual(Set(values), ["Wednesday, June 10th, 2026"])
     }
 }

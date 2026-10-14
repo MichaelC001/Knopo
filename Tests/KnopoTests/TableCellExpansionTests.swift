@@ -54,21 +54,27 @@ import KnopoCore
         #expect(!rendered.string.contains("result row"))
     }
 
-    /// Truncation binary-searches the cut point, so a cell holding a paragraph
-    /// costs a handful of measurements, not one per character. This case measured
-    /// ~7 s before the fix; a cell that expanded a `{{query}}` was as large as the
-    /// whole result set and re-rendered on every rebuild, hence the frozen app.
-    @Test func longCellTruncatesWithoutQuadraticMeasuring() {
+    @Test func longCellTruncates() {
         let long = String(repeating: "some long cell content ", count: 400)
-        let clock = ContinuousClock()
-        var rendered = NSAttributedString()
-        let elapsed = clock.measure {
-            rendered = BlockRenderer.render(content: "| a |\n| --- |\n| \(long) |",
+        let rendered = BlockRenderer.render(content: "| a |\n| --- |\n| \(long) |",
                                             context: BlockRenderer.Context(
                                                 journalDateFormat: .default))
-        }
-        #expect(elapsed < .seconds(1))
         #expect(rendered.string.contains("…"))
+        #expect(rendered.string.contains("some long"))
+        #expect(!rendered.string.contains(String(long.dropLast())))
+    }
+
+    /// A long cell must not trigger one expensive measurement per character.
+    @Test func longCellTruncationBoundsMeasurementWork() {
+        let cell = NSAttributedString(string: String(repeating: "some long cell content ", count: 400))
+        var measurements = 0
+        let truncated = BlockRenderer.truncatedCell(cell, toWidth: 20) { candidate in
+            measurements += 1
+            return CGFloat(candidate.length)
+        }
+        #expect(truncated.length == 20)
+        #expect(truncated.string.hasSuffix("…"))
+        #expect(measurements <= 32)
     }
 
     /// The truncated cell is still the widest thing the column allows: cutting

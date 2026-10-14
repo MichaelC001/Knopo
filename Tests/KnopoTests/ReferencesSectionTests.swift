@@ -5,7 +5,7 @@ import Testing
 @testable import KnopoCore
 
 @MainActor
-@Suite struct ReferencesSectionTests {
+@Suite(.serialized) struct ReferencesSectionTests {
     private func hit(_ id: UUID, _ content: String = "") -> BacklinkHit {
         BacklinkHit(blockID: id, pageKey: "notes", pageDisplayName: "Notes", content: content)
     }
@@ -32,7 +32,8 @@ import Testing
         #expect(rows[3].breadcrumb == [root])
     }
 
-    @Test func rowsUseTheOutlineTextViewAndOpenLinks() async throws {
+    @Test(arguments: [false, true])
+    func rowsUseTheOutlineTextViewAndOpenLinks(showBrackets: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-references-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -48,6 +49,9 @@ import Testing
         try #require(try store.cache.backlinks(of: PageName.key("Target")).count == 2)
         let app = AppState(store: store)
         defer { app.shutdown() }
+        let previousBrackets = BlockRenderer.bracketsEnabled
+        BlockRenderer.bracketsEnabled = showBrackets
+        defer { BlockRenderer.bracketsEnabled = previousBrackets }
         let nav = Navigator(app: app)
         let host = NSHostingView(rootView: ReferencesSection(pageName: "Target")
             .environmentObject(app).environmentObject(nav)
@@ -56,14 +60,16 @@ import Testing
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
         defer { window.contentView = nil }
-        for _ in 0..<8 {
+        try await waitUntil {
             window.layoutIfNeeded()
-            try await Task.sleep(for: .milliseconds(20))
+            return descendants(host, of: RenderedTextView.self).count == 2
         }
 
         let views = descendants(host, of: RenderedTextView.self)
-        #expect(views.map(\.string) == ["Heading with Target and Other", "Plain Target"]
-            || views.map(\.string) == ["Heading with [[Target]] and [[Other]]", "Plain [[Target]]"])
+        let expected = showBrackets
+            ? ["Heading with [[Target]] and [[Other]]", "Plain [[Target]]"]
+            : ["Heading with Target and Other", "Plain Target"]
+        #expect(views.map(\.string) == expected)
         let heading = try #require(views.first)
         // A heading row is bold at body size, not heading size.
         let font = try #require(heading.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
@@ -104,9 +110,9 @@ import Testing
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
         defer { window.contentView = nil }
-        for _ in 0..<8 {
+        try await waitUntil {
             window.layoutIfNeeded()
-            try await Task.sleep(for: .milliseconds(20))
+            return !descendants(host, of: RenderedTextView.self).isEmpty
         }
 
         let view = try #require(descendants(host, of: RenderedTextView.self).first)
@@ -142,9 +148,9 @@ import Testing
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
         defer { window.contentView = nil }
-        for _ in 0..<8 {
+        try await waitUntil {
             window.layoutIfNeeded()
-            try await Task.sleep(for: .milliseconds(20))
+            return !descendants(host, of: RenderedTextView.self).isEmpty
         }
 
         let view = try #require(descendants(host, of: RenderedTextView.self).first)

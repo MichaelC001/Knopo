@@ -55,18 +55,6 @@ import Foundation
         expectTrue(QueryParser.parse("bogusword") == nil)    // unknown bare word
         expectTrue(QueryParser.parse("(unknown #a)") == nil) // unknown head
     }
-
-    @Test func inlineParserRecognizesQuery() {
-        let nodes = InlineParser.parse("see {{query #work TODO}} here")
-        expectTrue(nodes.contains { if case .query = $0 { return true }; return false })
-    }
-
-    @Test func inlineMalformedQueryStaysLiteral() {
-        // `{{query}}` with nothing parseable round-trips as literal text.
-        let nodes = InlineParser.parse("{{query }}")
-        expectTrue(nodes.allSatisfy { if case .query = $0 { return false }; return true })
-        expectEqual(InlineParser.plainText(nodes), "{{query }}")
-    }
 }
 
 @Suite struct QueryRunTests {

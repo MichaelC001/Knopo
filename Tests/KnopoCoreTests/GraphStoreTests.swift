@@ -15,12 +15,6 @@ import Foundation
         let date = cal.date(from: comps)!
 
         expectEqual(GraphStore.conflictStamp(for: date), "20260610-143005")
-
-        // What the pin prevents: the same pattern under a Buddhist calendar.
-        let unpinned = DateFormatter()
-        unpinned.locale = Locale(identifier: "th_TH@calendar=buddhist")
-        unpinned.dateFormat = "yyyyMMdd-HHmmss"
-        expectTrue(unpinned.string(from: date).hasPrefix("2569"))
     }
     /// A save whose serialized text matches what is already on disk must not
     /// rewrite the file: every rewrite is a fresh version on file-versioning
@@ -466,10 +460,27 @@ import Foundation
 
     @Test func incrementalSyncSkipsUnchangedFiles() throws {
         let store = try makeGraph(["A": "- a\n"])
-        // Second sync with same stamps re-touches nothing (no error = pass);
-        // force rebuild re-creates the index from files.
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let initial = store.cache.indexStats
+        expectEqual(initial.full + initial.incremental, 1)
+
         try store.synchronizeIndex()
+        expectEqual(store.cache.indexStats, initial)
+
+        // A changed file must still be indexed by an ordinary sync.
+        try Data("- changed content\n".utf8).write(to: store.fileURL(forPageNamed: "A"))
+        try store.synchronizeIndex()
+        let changed = store.cache.indexStats
+        expectEqual(changed.full + changed.incremental, initial.full + initial.incremental + 1)
+        expectEqual(try store.cache.searchBlocks("changed").first?.content, "changed content")
+
+        try store.synchronizeIndex()
+        expectEqual(store.cache.indexStats, changed)
+
+        // Force ignores the unchanged stamp and rebuilds the page.
         try store.synchronizeIndex(force: true)
+        let forced = store.cache.indexStats
+        expectEqual(forced.full + forced.incremental, changed.full + changed.incremental + 1)
         expectEqual(try store.cache.allPages().count, 1)
         expectEqual(try store.cache.allPages().first?.displayName, "A")
     }

@@ -94,14 +94,20 @@ import KnopoCore
 
     @Test func missingFileShowsLinkChip() throws {
         let assets = try assetsDir()
+        defer { try? FileManager.default.removeItem(at: assets.deletingLastPathComponent()) }
         let url = assets.appendingPathComponent("gone.png")
         try writePNG(url, width: 10, height: 10)
-        #expect(renderedImages("![g](gone.png)", assets: assets).count == 1)
+        let markdown = "![Missing preview](gone.png)"
+        #expect(renderedImages(markdown, assets: assets).count == 1)
         try FileManager.default.removeItem(at: url)
         let rendered = BlockRenderer.render(
-            content: "![g](gone.png)",
+            content: markdown,
             context: BlockRenderer.Context(resolveBlockRef: { _ in nil }, assetsDir: assets))
-        #expect(renderedImages("![g](gone.png)", assets: assets).isEmpty)
-        #expect(rendered.string.contains("g"))
+        #expect(rendered.string == "🖼 Missing preview")
+        rendered.enumerateAttributes(in: NSRange(location: 0, length: rendered.length)) {
+            attributes, _, _ in
+            #expect(attributes[.attachment] == nil)
+            #expect((attributes[.link] as? URL)?.standardizedFileURL == url.standardizedFileURL)
+        }
     }
 }

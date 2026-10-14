@@ -5,7 +5,7 @@ import KnopoCore
 
 @Suite struct AppStateTests {
     @MainActor
-    @Test func rapidDebouncedSavesPersistAndIndexTheLatestEdit() async throws {
+    @Test func debouncedSaveThenFlushPersistsAndIndexesLatestEdit() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-async-save-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -17,10 +17,11 @@ import KnopoCore
         doc.blocks[0].content = "first snapshot"
         app.commit(doc)
 
-        // Let the debounce enqueue the first snapshot, then supersede it. The
-        // explicit flush must wait behind that write and leave disk/index on the
-        // newest revision.
-        try await Task.sleep(nanoseconds: 150_000_000)
+        let url = store.fileURL(forPageNamed: "Notes")
+        // Observe the first background write before editing and flushing again.
+        try await waitUntil {
+            (try? String(contentsOf: url, encoding: .utf8))?.contains("first snapshot") == true
+        }
         doc.blocks[0].content = "latest snapshot marker"
         app.commit(doc)
         app.flushPendingSaves()
@@ -32,12 +33,9 @@ import KnopoCore
         #expect(try store.cache.searchBlocks("latest snapshot marker", limit: 10).count == 1)
     }
 
-    /// A save that a newer edit superseded still wrote a file, and its stamp is
-    /// recorded so the resulting FSEvent isn't mistaken for someone else's edit.
-    /// The risk in recording more stamps is over-suppression, so what this pins
-    /// down is that a real external edit right afterwards is still noticed.
+    /// Tracking internal writes must not suppress the next external edit.
     @MainActor
-    @Test func externalEditIsStillSeenAfterASupersededSave() async throws {
+    @Test func externalEditAfterDebouncedAndFlushedSavesIsSeen() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-superseded-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -49,23 +47,21 @@ import KnopoCore
 
         let app = AppState(store: store, saveDebounce: 0.05, saveCeiling: 0.2)
         defer { app.shutdown() }
-        try await Task.sleep(nanoseconds: 300_000_000)
-
-        // Let one debounced save land, then supersede it and flush the newer one.
+        let url = store.fileURL(forPageNamed: "Notes")
         doc.blocks[0].content = "first"
         app.commit(doc)
-        try await Task.sleep(nanoseconds: 150_000_000)
+        try await waitUntil {
+            (try? String(contentsOf: url, encoding: .utf8)) == "- first\n"
+        }
         doc.blocks[0].content = "second"
         app.commit(doc)
         app.flushPendingSaves()
         let before = app.dataVersion
 
-        let url = store.fileURL(forPageNamed: "Notes")
         try Data("- changed by someone else\n".utf8).write(to: url, options: .atomic)
 
-        let deadline = Date().addingTimeInterval(2)
-        while app.dataVersion == before && Date() < deadline {
-            try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntil {
+            app.document(for: "Notes").blocks[0].content == "changed by someone else"
         }
         #expect(app.dataVersion > before)
         #expect(app.document(for: "Notes").blocks[0].content == "changed by someone else")
@@ -84,14 +80,12 @@ import KnopoCore
 
         let app = AppState(store: store)
         defer { app.shutdown() }
-        try await Task.sleep(nanoseconds: 300_000_000)
         let before = app.dataVersion
         let url = store.fileURL(forPageNamed: "Notes")
         try Data("- externally changed content\n".utf8).write(to: url, options: .atomic)
 
-        let deadline = Date().addingTimeInterval(2)
-        while app.dataVersion == before && Date() < deadline {
-            try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitUntil {
+            app.document(for: "Notes").blocks[0].content == "externally changed content"
         }
         #expect(app.dataVersion > before)
         #expect(app.document(for: "Notes").blocks[0].content == "externally changed content")

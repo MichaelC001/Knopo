@@ -4,8 +4,8 @@ import Testing
 @testable import Knopo
 import KnopoCore
 
-/// Where a large page's editing time goes. Not an assertion — it prints a table,
-/// and is skipped unless `KNOPO_BENCH` is set, so the ordinary suite stays quiet:
+/// Manual performance checks, skipped unless `KNOPO_BENCH` is set.
+/// `scripts/benchmark.sh` runs these and the sidebar benchmark in release mode.
 ///
 ///     KNOPO_BENCH=1 ./scripts/test.sh -c release --filter EditCostBenchmark
 ///
@@ -15,6 +15,19 @@ import KnopoCore
 /// the numbers that move between OS releases.
 @MainActor
 @Suite struct EditCostBenchmark {
+
+    /// This input took about seven seconds with character-by-character truncation.
+    /// Keep its machine-dependent budget out of the normal correctness suite.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["KNOPO_BENCH"] != nil))
+    func longTableCellRenderBudget() {
+        let long = String(repeating: "some long cell content ", count: 400)
+        let elapsed = ContinuousClock().measure {
+            _ = BlockRenderer.render(content: "| a |\n| --- |\n| \(long) |",
+                                     context: BlockRenderer.Context(journalDateFormat: .default))
+        }
+        print("Long table cell: \(elapsed)")
+        #expect(elapsed < .seconds(1))
+    }
 
     @discardableResult
     private func time(_ label: String, _ body: () -> Void) -> Double {

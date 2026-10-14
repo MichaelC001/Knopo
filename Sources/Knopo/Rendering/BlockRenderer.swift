@@ -914,10 +914,11 @@ enum BlockRenderer {
     /// The cut point is binary-searched: measuring is by far the expensive part,
     /// and walking back one character at a time cost a full re-measure per
     /// character — seconds of hang on a cell holding a paragraph of text.
-    private static func truncatedCell(
-        _ cell: NSAttributedString, toWidth width: CGFloat
+    static func truncatedCell(
+        _ cell: NSAttributedString, toWidth width: CGFloat,
+        measureWidth: (NSAttributedString) -> CGFloat = { $0.size().width }
     ) -> NSAttributedString {
-        guard ceil(cell.size().width) > width, cell.length > 0 else { return cell }
+        guard ceil(measureWidth(cell)) > width, cell.length > 0 else { return cell }
         let ellipsis = NSAttributedString(
             string: "…", attributes: cell.attributes(at: cell.length - 1, effectiveRange: nil))
         let ns = cell.string as NSString
@@ -936,11 +937,11 @@ enum BlockRenderer {
         }
         // `cuts.last` is the whole cell, which the guard above proved too wide;
         // if even the bare ellipsis overflows there's nothing narrower to show.
-        guard ceil(truncated(at: 0).size().width) <= width else { return ellipsis }
+        guard ceil(measureWidth(truncated(at: 0))) <= width else { return ellipsis }
         var fitting = 0, tooWide = cuts.count - 1
         while tooWide - fitting > 1 {
             let middle = (fitting + tooWide) / 2
-            if ceil(truncated(at: cuts[middle]).size().width) <= width {
+            if ceil(measureWidth(truncated(at: cuts[middle]))) <= width {
                 fitting = middle
             } else {
                 tooWide = middle

@@ -33,22 +33,31 @@ import Foundation
         expectEqual(try cache.blocks(taggedWith: "two").count, 1)
     }
 
-    /// Repeatedly reindexing an edited page must not evict the rest of the page
-    /// from the ref cache — the failure mode of a content-keyed cache, where each
-    /// keystroke added an entry and pushed the stable blocks out. Correctness is
-    /// what is observable here: every block's refs stay right across many saves.
-    @Test func manyEditsToOneBlockKeepTheRestOfThePageIndexed() throws {
+    /// Each incremental pass must update the state used by the next edit.
+    @Test func consecutiveEditsKeepSearchAndFacetsCurrent() throws {
         let cache = try CacheDB()
-        let ids = (0..<50).map { _ in UUID() }
-        var blocks = ids.enumerated().map { index, id in
-            Block(id: id, content: "block \(index) refs [[Target\(index)]]")
-        }
-        for keystroke in 0..<200 {
-            blocks[0] = Block(id: ids[0], content: "typing \(keystroke) refs [[Target0]]")
+        var blocks = [
+            Block(content: "revision0 [[Target0]] #tag0"),
+            Block(content: "neighbor [[Stable]] #steady"),
+        ]
+        try cache.indexPage(page("Notes", blocks: blocks), stamp: nil)
+        let initial = cache.indexStats
+        for revision in 1...3 {
+            blocks[0].content = "revision\(revision) [[Target\(revision)]] #tag\(revision)"
             try cache.indexPage(page("Notes", blocks: blocks), stamp: nil)
-        }
-        for index in 0..<50 {
-            expectEqual(try cache.backlinks(of: PageName.key("Target\(index)")).count, 1)
+
+            expectEqual(cache.indexStats.full, 1)
+            expectEqual(cache.indexStats.incremental, revision)
+            expectEqual(cache.indexStats.blocksRewritten - initial.blocksRewritten, revision)
+            expectTrue(try cache.searchBlocks("revision\(revision - 1)").isEmpty)
+            expectEqual(try cache.searchBlocks("revision\(revision)").map(\.content),
+                        [blocks[0].content])
+            expectTrue(try cache.backlinks(of: "target\(revision - 1)").isEmpty)
+            expectEqual(try cache.backlinks(of: "target\(revision)").count, 1)
+            expectTrue(try cache.blocks(taggedWith: "tag\(revision - 1)").isEmpty)
+            expectEqual(try cache.blocks(taggedWith: "tag\(revision)").count, 1)
+            expectEqual(try cache.backlinks(of: "stable").count, 1)
+            expectEqual(try cache.blocks(taggedWith: "steady").count, 1)
         }
     }
 

@@ -64,7 +64,7 @@ import KnopoCore
 
     /// Auto-focusing a page's sole empty block must not write anything: no second
     /// block, no content, and no file created just because the page was shown.
-    @Test func focusingAnEmptyPageWritesNothing() throws {
+    @Test func focusingAnEmptyPageWritesNothing() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-hint-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -72,18 +72,39 @@ import KnopoCore
         let app = AppState(store: store)
         defer { app.shutdown() }
 
-        // A page with no file yet: the store synthesises one empty block, which is
-        // the state the outline auto-focuses.
         let doc = app.document(for: "Fresh Page")
-        #expect(doc.blocks.count == 1)
-        #expect(doc.blocks[0].content.isEmpty)
-        #expect(!doc.fileExists)
+        let controller = OutlineEditorController(app: app, nav: Navigator(app: app))
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        scroll.documentView = controller.tableView
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = scroll
+        defer {
+            controller.endEditing()
+            window.contentView = nil
+        }
+        controller.tableView.frame = scroll.bounds
+        controller.present(pageName: "Fresh Page", zoom: nil)
+        let unfocusedHeight = controller.tableView.rect(ofRow: 0).height
+        try await waitUntil {
+            window.layoutIfNeeded()
+            return window.firstResponder is BlockEditorTextView
+        }
+        let editor = try #require(window.firstResponder as? BlockEditorTextView)
+        #expect(controller.tableView.rect(ofRow: 0).height == unfocusedHeight)
+        #expect(editor.string.isEmpty)
+        #expect(editor.accessibilityPlaceholderValue() == BlockRenderer.emptyBlockHint)
 
-        // Focusing is not an edit, so a flush has nothing to commit and the page
-        // stays absent from disk (SPEC §10: today's file is written on first content).
+        // Closing the real focus session must not create an edit or save a stub.
+        controller.endEditing()
         app.flushPendingSaves()
-        let pageFile = store.pagesDir.appendingPathComponent("Fresh Page.md")
+        let after = app.document(for: "Fresh Page")
+        #expect(after.blocks.map(\.id) == doc.blocks.map(\.id))
+        #expect(after.blocks.map(\.content) == [""])
+        #expect(!after.isDirty)
+        #expect(!after.fileExists)
+
+        let pageFile = store.fileURL(forPageNamed: "Fresh Page")
         #expect(!FileManager.default.fileExists(atPath: pageFile.path))
-        #expect(app.document(for: "Fresh Page").blocks.count == 1)
     }
 }

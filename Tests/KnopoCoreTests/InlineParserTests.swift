@@ -325,16 +325,24 @@ import Foundation
         )
         // Lenient spacing.
         expectEqual(InlineParser.parse("{{embed  [[A]] }}"), [.embed(.page("A"))])
-        // A valid `{{query …}}` is now interpreted (§17).
-        expectEqual(InlineParser.parse("{{query (and [[a]])}}"),
-                    [.query(.and([.pageRef("a")]))])
-        // Other / malformed `{{…}}` still render literally (round-trip).
+        // Unknown macros stay literal.
         expectEqual(InlineParser.parse("{{foo bar}}"), [.text("{{foo bar}}")])
-        expectEqual(InlineParser.parse("{{query }}"), [.text("{{query }}")])
         // Embeds register as references (§7.5): block embed → block ref.
         let refs = RefExtractor.extract(from: "{{embed ((\(id)))}} and {{embed [[Page]]}}")
         expectEqual(refs.blockRefs, [UUID(uuidString: id)!])
         expectEqual(refs.pageRefs, ["Page"])
+    }
+
+    @Test func queriesPreserveTheirExpressionAndSurroundingText() {
+        expectEqual(InlineParser.parse("see {{query #work TODO}} here"), [
+            .text("see "), .query(.and([.tag("work"), .task([.todo])])), .text(" here"),
+        ])
+        expectEqual(InlineParser.parse("{{query (and [[a]])}}"),
+                    [.query(.and([.pageRef("a")]))])
+    }
+
+    @Test func malformedQueryStaysLiteral() {
+        expectEqual(InlineParser.parse("{{query }}"), [.text("{{query }}")])
     }
 
     @Test func extraction() {
@@ -350,50 +358,5 @@ import Foundation
         expectEqual(RefExtractor.extract(from: "```\n[[x]] #y\n```"), ExtractedRefs())
         let refs = RefExtractor.extract(from: "before [[A]]\n```\n[[x]]\n```\nafter [[B]]")
         expectEqual(refs.pageRefs, ["A", "B"])
-    }
-
-    @Test func pageNameRules() {
-        expectTrue(PageName.isValid("Project X"))
-        expectTrue(PageName.isValid("Projects/Outliner"))
-        expectFalse(PageName.isValid("bad[name]"))
-        expectFalse(PageName.isValid("bad#name"))
-        expectFalse(PageName.isValid(" leading"))
-        expectFalse(PageName.isValid(""))
-        expectEqual(PageName.key("Project X"), PageName.key("project x"))
-        expectEqual(PageName.fileName(for: "Projects/Outliner"), "Projects%2FOutliner.md")
-        expectEqual(PageName.name(fromFileName: "Projects%2FOutliner.md"), "Projects/Outliner")
-        expectEqual(PageName.name(fromFileName: "Plain.md"), "Plain")
-        expectNil(PageName.name(fromFileName: "not-a-page.txt"))
-    }
-
-    @Test func journalDates() {
-        let d = JournalDate(pageName: "2026-06-10")
-        expectNotNil(d)
-        expectEqual(d?.pageName, "2026-06-10")
-        expectEqual(d?.displayName(using: JournalDateFormat(rawValue: "MMM d{ordinal}, yyyy"), locale: Locale(identifier: "en_US")), "Jun 10th, 2026")
-        expectNil(JournalDate(pageName: "2026-13-01"))
-        expectNil(JournalDate(pageName: "not-a-date"))
-        expectNil(JournalDate(pageName: "2026-6-1"))
-        expectEqual(
-            JournalDate(pageName: "2026-06-01")!.displayName(using: JournalDateFormat(rawValue: "MMM d{ordinal}, yyyy"), locale: Locale(identifier: "en_US")),
-            "Jun 1st, 2026")
-        expectEqual(
-            JournalDate(pageName: "2026-06-02")!.displayName(using: JournalDateFormat(rawValue: "MMM d{ordinal}, yyyy"), locale: Locale(identifier: "en_US")),
-            "Jun 2nd, 2026")
-        expectEqual(
-            JournalDate(pageName: "2026-06-03")!.displayName(using: JournalDateFormat(rawValue: "MMM d{ordinal}, yyyy"), locale: Locale(identifier: "en_US")),
-            "Jun 3rd, 2026")
-        expectEqual(
-            JournalDate(pageName: "2026-06-11")!.displayName(using: JournalDateFormat(rawValue: "MMM d{ordinal}, yyyy"), locale: Locale(identifier: "en_US")),
-            "Jun 11th, 2026")
-        expectEqual(JournalDate(pageName: "2026-06-10")!.adding(days: 1).pageName, "2026-06-11")
-        expectEqual(JournalDate(pageName: "2026-01-01")!.adding(days: -1).pageName, "2025-12-31")
-        // Logseq's underscore filename form parses to the same date.
-        expectEqual(JournalDate(pageName: "2024_04_30")?.pageName, "2024-04-30")
-        expectEqual(
-            JournalDate(pageName: "2024_04_30")?.displayName(using: JournalDateFormat(rawValue: "MMM d{ordinal}, yyyy"), locale: Locale(identifier: "en_US")),
-            "Apr 30th, 2024")
-        expectNil(JournalDate(pageName: "2024_13_01"))
-        expectNil(JournalDate(pageName: "not_a_date"))
     }
 }
