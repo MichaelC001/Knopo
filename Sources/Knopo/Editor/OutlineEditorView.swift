@@ -20,7 +20,7 @@ struct OutlineEditorView: View {
     /// Whether this outline is a right-sidebar pane (SPEC §5.4): panes are for
     /// reference, so they never put the caret in a block on their own.
     var inPane = false
-    /// The sidebar knows its width before AppKit asks for every row's height.
+    /// Shared scroll views know their width before AppKit measures the rows.
     var initialWidth: CGFloat? = nil
     /// Feed outlines can coexist with an incoming day page during navigation.
     var inJournalFeed = false
@@ -81,8 +81,14 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: OutlineTableView, context: Context) {
-        context.coordinator.controller?.initialLayoutWidth = initialWidth
-        context.coordinator.controller?.present(pageName: pageName, zoom: zoom)
+        guard let controller = context.coordinator.controller else { return }
+        // Width changes use the table's layout path. Do not refresh queries
+        // and embeds on every resize frame unless the data also changed.
+        let refreshContent = controller.initialLayoutWidth == initialWidth
+            || context.coordinator.dataVersion != dataVersion
+        context.coordinator.dataVersion = dataVersion
+        controller.initialLayoutWidth = initialWidth
+        controller.present(pageName: pageName, zoom: zoom, refreshContent: refreshContent)
         // Any registered outline driving this is fine; the coordinator dedupes.
         nav.find.sync(active: findActive, query: findQuery,
                       stepToken: findStepToken, forward: findForward)
@@ -103,6 +109,7 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
     final class Coordinator {
         var controller: OutlineEditorController?
         weak var find: FindCoordinator?
+        var dataVersion: Int?
     }
 }
 
@@ -615,7 +622,7 @@ final class OutlineEditorController: NSObject {
 
     // MARK: - Presentation / reload
 
-    func present(pageName: String, zoom: UUID?) {
+    func present(pageName: String, zoom: UUID?, refreshContent: Bool = true) {
         // `zoom` here is the block-zoom UUID; `BlockRenderer.zoom` is the content
         // font-zoom — both flow through here.
         let bracketsChanged = BlockRenderer.bracketsEnabled != renderedWithBrackets
@@ -646,7 +653,7 @@ final class OutlineEditorController: NSObject {
             // text density): re-render the cached rows and re-measure heights.
             reloadAndFocus(focusedBlockID, selection: focusedBlockID != nil
                 ? editor.selectedRange() : nil, reuseStaticRenders: false)
-        } else {
+        } else if refreshContent {
             refreshIfChanged()
         }
         // A freshly created page focuses its first block so you can type at once
@@ -1076,7 +1083,7 @@ final class OutlineEditorController: NSObject {
 
     private var rowLayoutWidth: CGFloat {
         // SwiftUI probes a detached table at 100 points before placing it.
-        // Its pane already supplies the actual available width.
+        // Shared scroll views supply the actual available width.
         if tableView.window == nil, let initialLayoutWidth { return initialLayoutWidth }
         return max(tableView.bounds.width, 100)
     }
