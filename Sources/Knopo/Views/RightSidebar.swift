@@ -7,6 +7,7 @@ import KnopoCore
 struct RightSidebar: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var nav: Navigator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let cardCorner: CGFloat = 10
     private static let cardInset: CGFloat = 10
@@ -71,10 +72,19 @@ struct RightSidebar: View {
     private func card(index i: Int, pane: RightPane, outlineWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             header(index: i, pane: pane)
-            if !pane.collapsed {
-                Divider().padding(.horizontal, 12)
-                paneContent(pane.target, outlineWidth: outlineWidth)
+            VStack(spacing: 0) {
+                if !pane.collapsed {
+                    VStack(spacing: 0) {
+                        Divider().padding(.horizontal, 12)
+                        paneContent(pane.target, outlineWidth: outlineWidth)
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
+            // Keep the moving body below the header.
+            // Clipping alone would still let it intercept header clicks.
+            .clipped()
+            .contentShape(Rectangle())
         }
         // Clip content to the rounded shape so opaque panes (e.g. All Pages'
         // List background) don't bleed white into the corners. Page panes are
@@ -98,14 +108,15 @@ struct RightSidebar: View {
             // The disclosure + title is one big hit target (click anywhere on
             // the title row toggles), with separate menu / close buttons.
             Button {
-                nav.toggleRightPaneCollapsed(at: i)
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                    nav.toggleRightPaneCollapsed(at: i)
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(pane.collapsed ? 0 : 90))
-                        .animation(.easeInOut(duration: 0.15), value: pane.collapsed)
                     Text(paneTitle(pane.target))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.secondary)
