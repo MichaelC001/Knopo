@@ -63,8 +63,9 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> OutlineTableView {
+    func makeNSView(context: Context) -> OutlineContainerView {
         let controller = OutlineEditorController(app: app, nav: nav)
+        let container = OutlineContainerView(tableView: controller.tableView)
         controller.inPane = inPane
         controller.inJournalFeed = inJournalFeed
         controller.applyPaneRole()
@@ -77,10 +78,10 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
             controller.tableView.setFrameSize(NSSize(width: initialWidth, height: 0))
         }
         controller.present(pageName: pageName, zoom: zoom)
-        return controller.tableView
+        return container
     }
 
-    func updateNSView(_ nsView: OutlineTableView, context: Context) {
+    func updateNSView(_ nsView: OutlineContainerView, context: Context) {
         guard let controller = context.coordinator.controller else { return }
         // Width changes use the table's layout path. Do not refresh queries
         // and embeds on every resize frame unless the data also changed.
@@ -94,7 +95,7 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
                       stepToken: findStepToken, forward: findForward)
     }
 
-    static func dismantleNSView(_ nsView: OutlineTableView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: OutlineContainerView, coordinator: Coordinator) {
         if let controller = coordinator.controller {
             // Navigating away (this representable is replaced) must close any
             // open autocomplete: its panel is a child window retained by the
@@ -114,6 +115,82 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
 }
 
 // MARK: - Self-sizing table view
+
+/// Animates the outline's height without changing AppKit's row layout mid-fold.
+final class OutlineContainerView: NSView {
+    let tableView: OutlineTableView
+    private var foldAnimationID: UUID?
+    var isAnimatingFold: Bool { foldAnimationID != nil }
+    @objc private dynamic var foldHeight: CGFloat = 0 {
+        didSet { invalidateIntrinsicContentSize() }
+    }
+
+    init(tableView: OutlineTableView) {
+        self.tableView = tableView
+        super.init(frame: .zero)
+        clipsToBounds = true
+        addSubview(tableView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var isFlipped: Bool { true }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric,
+               height: foldAnimationID == nil ? tableView.intrinsicContentSize.height : foldHeight)
+    }
+
+    override func layout() {
+        super.layout()
+        tableView.frame = NSRect(x: 0, y: 0, width: bounds.width,
+                                height: max(bounds.height, tableView.intrinsicContentSize.height))
+    }
+
+    override class func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
+        if key == #keyPath(foldHeight) { return CABasicAnimation() }
+        return super.defaultAnimation(forKey: key)
+    }
+
+    func performRowUpdates(animated: Bool, _ updates: () -> Void) {
+        let startHeight = intrinsicContentSize.height
+        cancelFoldAnimation()
+        let animationID = UUID()
+        if animated {
+            foldHeight = startHeight
+            foldAnimationID = animationID
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = animated ? 0.16 : 0
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            updates()
+            if animated { animator().foldHeight = tableView.intrinsicContentSize.height }
+        }, completionHandler: { [weak self] in
+            guard let self, self.foldAnimationID == animationID else { return }
+            self.foldAnimationID = nil
+            self.invalidateIntrinsicContentSize()
+        })
+    }
+
+    func cancelFoldAnimation() {
+        guard foldAnimationID != nil else { return }
+        foldAnimationID = nil
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            animator().foldHeight = foldHeight
+        }
+        invalidateIntrinsicContentSize()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { cancelFoldAnimation() }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        if abs(newSize.width - frame.width) > 0.5 { cancelFoldAnimation() }
+        super.setFrameSize(newSize)
+    }
+}
 
 /// The outline lives inside the page's SwiftUI ScrollView, so the table
 /// reports its full content height as intrinsic size and never scrolls itself.
@@ -141,6 +218,26 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     var onDragExited: (() -> Void)?
     private var lastLayoutWidth: CGFloat = -1
 
+    func performRowUpdates(animated: Bool, _ updates: () -> Void) {
+        if let container = superview as? OutlineContainerView {
+            container.performRowUpdates(animated: animated, updates)
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                updates()
+            }
+        }
+    }
+
+    func cancelFoldAnimation() {
+        (superview as? OutlineContainerView)?.cancelFoldAnimation()
+    }
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        (superview as? OutlineContainerView)?.invalidateIntrinsicContentSize()
+    }
+
     /// Tracer for AppKit's "reentrant operation in its NSTableView delegate"
     /// warning (slated to become an assert): counts nesting into the table's
     /// own layout/update passes — where AppKit runs the delegate callbacks —
@@ -159,6 +256,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     }
 
     override func reloadData() {
+        cancelFoldAnimation()
         tracedMutation("reloadData") { super.reloadData() }
     }
 
@@ -183,6 +281,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     }
 
     override func noteHeightOfRows(withIndexesChanged indexSet: IndexSet) {
+        cancelFoldAnimation()
         tracedMutation("noteHeightOfRows") {
             super.noteHeightOfRows(withIndexesChanged: indexSet)
         }
@@ -227,6 +326,16 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     override var intrinsicContentSize: NSSize {
         let height = numberOfRows > 0 ? rect(ofRow: numberOfRows - 1).maxY : 28
         return NSSize(width: NSView.noIntrinsicMetric, height: max(height, 28))
+    }
+
+    override var visibleRect: NSRect {
+        guard (superview as? OutlineContainerView)?.isAnimatingFold == true,
+              let clip = enclosingScrollView?.contentView else { return super.visibleRect }
+        // Keep moving rows alive beyond the container's temporary clip.
+        // The surrounding scroll view still limits how many rows are prepared.
+        let extent = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width,
+                            height: max(bounds.height, intrinsicContentSize.height))
+        return extent.intersection(convert(clip.bounds, from: clip))
     }
 
     private var preparingVisibleRows = false
@@ -1558,11 +1667,14 @@ final class OutlineEditorController: NSObject {
     /// Full reload from the store, then re-attaches the shared editor to the
     /// given block (if still visible).
     private func reloadAndFocus(
-        _ id: UUID?, selection: NSRange?, reuseStaticRenders: Bool = true
+        _ id: UUID?, selection: NSRange?, reuseStaticRenders: Bool = true,
+        folding: Bool = false
     ) {
+        if !folding { tableView.cancelFoldAnimation() }
         let old = rows
         let previousFocus = focusedBlockID
         rebuildRows(reusingStaticRendersFrom: reuseStaticRenders ? old : nil)
+        if folding { remapSelection(from: old) }
         // Move the focus marker BEFORE applying row updates: unlike the old
         // full `reloadData()` (lazy — cells materialized after `attachEditor`
         // updated the marker), row-level reloads reconfigure synchronously, and
@@ -1576,7 +1688,7 @@ final class OutlineEditorController: NSObject {
         focusedBlockID = newFocus
         let reloadedIDs: Set<UUID>
         if reuseStaticRenders {
-            reloadedIDs = applyRowChanges(from: old)
+            reloadedIDs = applyRowChanges(from: old, folding: folding)
         } else {
             // Global style changes affect every row. Updating all their heights
             // in place makes AppKit prepare rows across the old and new frames.
@@ -1594,7 +1706,12 @@ final class OutlineEditorController: NSObject {
         }
         tableView.invalidateIntrinsicContentSize()
         if let newFocus {
-            attachEditor(to: newFocus, selection: selection, startSession: false)
+            // Folding leaves a surviving editor intact. Reattaching also scrolls
+            // to its caret, which can jump past the rows still animating.
+            if !folding || previousFocus != newFocus || editor.window == nil
+                || reloadedIDs.contains(newFocus) {
+                attachEditor(to: newFocus, selection: selection, startSession: false)
+            }
         } else {
             editor.removeFromSuperview()
         }
@@ -1605,27 +1722,42 @@ final class OutlineEditorController: NSObject {
     /// re-lays-out) each visible one — the dominant cost of a structural edit
     /// on a large page, where a split/indent/move touches only a couple of
     /// rows. Unchanged rows keep their live cells untouched.
-    private func applyRowChanges(from old: [Row]) -> Set<UUID> {
+    private func applyRowChanges(from old: [Row], folding: Bool = false) -> Set<UUID> {
         guard tableView.numberOfRows == old.count else {
             return reloadAllRows()
         }
         let diff = rows.map(\.block.id).difference(from: old.map(\.block.id))
         // A wholesale change (an external reload re-mints every volatile id)
         // diffs into ~2n edits; a plain reload is cheaper.
-        guard diff.count <= max(8, rows.count / 2) else {
+        // Folding can hide most of a page. Keep the surviving cells in place.
+        guard folding || diff.count <= max(8, rows.count / 2) else {
             return reloadAllRows()
         }
         if !diff.isEmpty {
-            tableView.beginUpdates()
+            var removed = IndexSet()
+            var inserted = IndexSet()
             for change in diff {
                 switch change {
                 case .remove(let offset, _, _):
-                    tableView.removeRows(at: IndexSet(integer: offset), withAnimation: [])
+                    removed.insert(offset)
                 case .insert(let offset, _, _):
-                    tableView.insertRows(at: IndexSet(integer: offset), withAnimation: [])
+                    inserted.insert(offset)
                 }
             }
-            tableView.endUpdates()
+            let animate = folding && tableView.window != nil
+                && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            tableView.performRowUpdates(animated: animate) {
+                tableView.beginUpdates()
+                if !removed.isEmpty {
+                    tableView.removeRows(at: removed,
+                                         withAnimation: animate ? [.slideUp, .effectFade] : [])
+                }
+                if !inserted.isEmpty {
+                    tableView.insertRows(at: inserted,
+                                         withAnimation: animate ? [.slideDown, .effectFade] : [])
+                }
+                tableView.endUpdates()
+            }
         }
         // Surviving rows whose visuals changed re-configure. The rendered
         // comparison is by identity: the render cache returns the same instance
@@ -1637,11 +1769,16 @@ final class OutlineEditorController: NSObject {
         var changed: [Int] = []
         for (index, row) in rows.enumerated() {
             guard let prev = oldByID[row.block.id] else { continue } // freshly inserted
-            if prev.rendered !== row.rendered
+            let needsRenderReload = prev.rendered !== row.rendered
+                && !(folding && row.block.id == focusedBlockID)
+            if needsRenderReload
                 || prev.depth != row.depth
-                || prev.hasChildren != row.hasChildren
-                || prev.block.collapsed != row.block.collapsed {
+                || prev.hasChildren != row.hasChildren {
                 changed.append(index)
+            } else if prev.block.collapsed != row.block.collapsed {
+                let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
+                    as? OutlineRowCell
+                cell?.updateFoldState(collapsed: row.block.collapsed && row.block.id != zoom)
             }
         }
         if !changed.isEmpty {
@@ -1850,6 +1987,18 @@ final class OutlineEditorController: NSObject {
     // MARK: - Node selection (SPEC §13)
 
     private var hasSelection: Bool { !selectedRows.isEmpty }
+
+    private func remapSelection(from old: [Row]) {
+        guard hasSelection else { return }
+        let ids = Set(selectedRows.compactMap { old.indices.contains($0) ? old[$0].block.id : nil })
+        let anchorID = selectionAnchor.flatMap { old.indices.contains($0) ? old[$0].block.id : nil }
+        let activeID = selectionActive.flatMap { old.indices.contains($0) ? old[$0].block.id : nil }
+        // Selection follows surviving blocks as their row indexes change.
+        selectedRows = Set(rows.indices.filter { ids.contains(rows[$0].block.id) })
+        selectionAnchor = rows.firstIndex { $0.block.id == anchorID } ?? selectedRows.min()
+        selectionActive = rows.firstIndex { $0.block.id == activeID } ?? selectedRows.max()
+        if selectedRows.isEmpty, Self.selectionOwner === self { Self.selectionOwner = nil }
+    }
 
     private func setSelection(_ rows: Set<Int>, anchor: Int?, active: Int? = nil) {
         if rows.isEmpty {
@@ -2382,10 +2531,15 @@ final class OutlineEditorController: NSObject {
     private func toggleFold(_ id: UUID) {
         var doc = app.document(for: pageName)
         guard let path = doc.blocks.path(to: id) else { return }
+        if let focusedBlockID, let focusedPath = doc.blocks.path(to: focusedBlockID),
+           focusedPath.count > path.count, focusedPath.starts(with: path) {
+            // Show rendered text while the edited child slides out.
+            endEditing()
+        }
         doc.blocks.update(at: path) { $0.collapsed.toggle() }
         app.commit(doc)
         reloadAndFocus(focusedBlockID, selection: focusedBlockID != nil
-            ? editor.selectedRange() : nil)
+            ? editor.selectedRange() : nil, folding: true)
     }
 
     private func handleLink(_ url: URL, blockID: UUID, inSidebar: Bool) {

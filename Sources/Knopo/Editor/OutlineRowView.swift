@@ -160,15 +160,19 @@ final class OutlineRowCell: NSTableCellView {
             hovering = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
         }
         updateFoldVisibility()
+        updateFoldState(collapsed: collapsed)
+        // An empty leaf block hides its bullet (nothing to zoom/fold/reference);
+        // the gutter space stays so text never shifts horizontally.
+        bullet.isHidden = isEmptyLeaf
+        needsLayout = true
+    }
+
+    func updateFoldState(collapsed: Bool) {
         let symbol = collapsed ? "chevron.right" : "chevron.down"
         foldButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 8 * BlockRenderer.zoom, weight: .bold))
         foldButton.contentTintColor = .tertiaryLabelColor
         bullet.isCollapsed = collapsed
-        // An empty leaf block hides its bullet (nothing to zoom/fold/reference);
-        // the gutter space stays so text never shifts horizontally.
-        bullet.isHidden = isEmptyLeaf
-        needsLayout = true
     }
 
     /// Takes an embedded editor back out and shows this row's rendered content
