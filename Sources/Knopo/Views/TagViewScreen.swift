@@ -20,41 +20,48 @@ struct TagViewScreen: View {
         let hits = (try? app.store.cache.blocks(taggedWith: tag)) ?? []
         let groups = PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName))
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12 * BlockRenderer.zoom) {
-                if !inPane {
-                    HStack {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(verbatim: "#\(tag)")   // the tag is data, not a key
-                                .font(.system(size: BlockRenderer.pageTitleFontSize, weight: .bold))
-                                .foregroundStyle(.purple)
-                            Text("\(hits.count) blocks")   // pluralized in Localization/en.lproj
-                                .font(.system(size: BlockRenderer.baseFontSize))
-                                .foregroundStyle(.secondary)
+        let content = VStack(alignment: .leading, spacing: 12 * BlockRenderer.zoom) {
+            if !inPane {
+                HStack {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(verbatim: "#\(tag)")   // the tag is data, not a key
+                            .font(.system(size: BlockRenderer.pageTitleFontSize, weight: .bold))
+                            .foregroundStyle(.purple)
+                        Text("\(hits.count) blocks")   // pluralized in Localization/en.lproj
+                            .font(.system(size: BlockRenderer.baseFontSize))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    ActionsMenu {
+                        Button(app.store.config.isFavouriteTag(tag)
+                            ? "Remove from Favourites" : "Add to Favourites") {
+                            app.toggleFavouriteTag(tag)
                         }
-                        Spacer()
-                        ActionsMenu {
-                            Button(app.store.config.isFavouriteTag(tag)
-                                ? "Remove from Favourites" : "Add to Favourites") {
-                                app.toggleFavouriteTag(tag)
-                            }
-                            Divider()
-                            Button("Rename Tag…") {
-                                renameText = tag
-                                renameShown = true
-                            }
+                        Divider()
+                        Button("Rename Tag…") {
+                            renameText = tag
+                            renameShown = true
                         }
                     }
-                    Text("Tag view — generated, read-only. Tags are labels, not pages.")
-                        .font(.system(size: BlockRenderer.baseFontSize * 0.85))
-                        .foregroundStyle(.secondary)
                 }
-
-                // Read-only results, laid out like Linked References.
-                BlockResultList(groups: groups, editable: false)
+                Text("Tag view — generated, read-only. Tags are labels, not pages.")
+                    .font(.system(size: BlockRenderer.baseFontSize * 0.85))
+                    .foregroundStyle(.secondary)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Read-only results, laid out like Linked References.
+            BlockResultList(groups: groups, editable: false)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        return Group {
+            if inPane {
+                // The sidebar scrolls the whole card stack.
+                content
+            } else {
+                ScrollView { content }
+            }
         }
         .sheet(isPresented: $renameShown) { renameSheet }
     }

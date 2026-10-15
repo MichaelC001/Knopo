@@ -200,9 +200,9 @@ struct RightSidebar: View {
             // never holds this target. Show today's page if one does.
             PageScreen(pageName: JournalDate.today().pageName, inPane: true, initialOutlineWidth: outlineWidth)
         case .tag(let tag):
-            // These bring their own ScrollView, so bound their height here.
-            TagViewScreen(tag: tag, inPane: true).frame(height: 420)
+            TagViewScreen(tag: tag, inPane: true)
         case .allPages:
+            // All Pages has its own scroll view, so bound its height here.
             AllPagesView(inPane: true).frame(height: 420)
         }
     }
