@@ -7,6 +7,7 @@ import KnopoCore
 struct BlockResultList: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var nav: Navigator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let groups: [(key: String, value: [BacklinkHit])]
     /// Reference rows edit in place. Tag view rows are read-only.
     let editable: Bool
@@ -23,17 +24,24 @@ struct BlockResultList: View {
                 groupHeader(group.key)
                     .padding(.top, index == 0 ? 0 : 10 * BlockRenderer.zoom)
                     .padding(.bottom, 2)
-                if !collapsedGroups.contains(group.key) {
-                    // One query per visible group. The rows need each other's
-                    // ancestors to nest and to share breadcrumbs.
-                    let ancestors = (try? app.store.cache.breadcrumbs(
-                        ofBlocks: group.value.map(\.blockID))) ?? [:]
-                    ForEach(ResultRowLayout.layout(group.value, ancestors: ancestors),
-                            id: \.hit.blockID) { row in
-                        ResultRow(row: row, editable: editable)
-                            .padding(.leading, Self.levelIndent - ResultRow.bulletInset)
+                VStack(alignment: .leading, spacing: 0) {
+                    if !collapsedGroups.contains(group.key) {
+                        // One query per visible group. The rows need each other's
+                        // ancestors to nest and to share breadcrumbs.
+                        let ancestors = (try? app.store.cache.breadcrumbs(
+                            ofBlocks: group.value.map(\.blockID))) ?? [:]
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(ResultRowLayout.layout(group.value, ancestors: ancestors),
+                                    id: \.hit.blockID) { row in
+                                ResultRow(row: row, editable: editable)
+                                    .padding(.leading, Self.levelIndent - ResultRow.bulletInset)
+                            }
+                        }
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
+                .clipped()
+                .contentShape(Rectangle())
             }
         }
     }
@@ -42,8 +50,10 @@ struct BlockResultList: View {
     private func groupHeader(_ sourcePage: String) -> some View {
         HStack(spacing: 4 * BlockRenderer.zoom) {
             Button {
-                if collapsedGroups.contains(sourcePage) { collapsedGroups.remove(sourcePage) }
-                else { collapsedGroups.insert(sourcePage) }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                    if collapsedGroups.contains(sourcePage) { collapsedGroups.remove(sourcePage) }
+                    else { collapsedGroups.insert(sourcePage) }
+                }
             } label: {
                 ResultChevron(expanded: !collapsedGroups.contains(sourcePage))
             }
@@ -109,9 +119,10 @@ struct ResultChevron: View {
     let expanded: Bool
 
     var body: some View {
-        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+        Image(systemName: "chevron.right")
             .font(.system(size: 9 * BlockRenderer.zoom, weight: .bold))
             .foregroundStyle(.tertiary)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
             .frame(width: 14 * BlockRenderer.zoom, height: 14 * BlockRenderer.zoom)
             .contentShape(Rectangle())
     }

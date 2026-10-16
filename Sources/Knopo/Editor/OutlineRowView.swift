@@ -54,6 +54,8 @@ final class OutlineRowCell: NSTableCellView {
     private let codeBackground = CodeBackgroundView(frame: .zero)
     private let embedBackground = EmbedBackgroundView(frame: .zero)
     private let colorBackground = ColorBoxView(frame: .zero)  // background-color:: box
+    // The full-width selection fill stays still while the content slides.
+    var indentationAnimationViews: [NSView] { [foldButton, bullet, container] }
     private var blockColor: NSColor?
     private var depth = 0
     private var isQuote = false
@@ -173,6 +175,17 @@ final class OutlineRowCell: NSTableCellView {
             .withSymbolConfiguration(.init(pointSize: 8 * BlockRenderer.zoom, weight: .bold))
         foldButton.contentTintColor = .tertiaryLabelColor
         bullet.isCollapsed = collapsed
+    }
+
+    /// Indenting keeps the text and its editor in place. Only geometry changes.
+    func updateStructure(depth: Int, hasChildren: Bool, collapsed: Bool, isEmptyLeaf: Bool) {
+        self.depth = depth
+        rowHasChildren = hasChildren
+        closePreview()
+        updateFoldVisibility()
+        updateFoldState(collapsed: collapsed)
+        bullet.isHidden = isEmptyLeaf
+        needsLayout = true
     }
 
     /// Takes an embedded editor back out and shows this row's rendered content

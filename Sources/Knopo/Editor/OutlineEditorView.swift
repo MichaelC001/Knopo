@@ -196,6 +196,9 @@ final class OutlineContainerView: NSView {
 /// reports its full content height as intrinsic size and never scrolls itself.
 final class OutlineTableView: NSTableView, NSMenuItemValidation {
 
+    var blockEditAnimation = BlockEditAnimation() {
+        didSet { oldValue.cancel() }
+    }
     var onWidthChange: (() -> Void)?
     /// Every layout pass, so a pending reveal can notice that the rows moved under
     /// it — including AppKit's own re-measures, which no delegate call announces.
@@ -256,11 +259,13 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     }
 
     override func reloadData() {
+        blockEditAnimation.cancel()
         cancelFoldAnimation()
         tracedMutation("reloadData") { super.reloadData() }
     }
 
     override func reloadData(forRowIndexes rowIndexes: IndexSet, columnIndexes: IndexSet) {
+        blockEditAnimation.cancel()
         tracedMutation("reloadData(forRowIndexes:)") {
             super.reloadData(forRowIndexes: rowIndexes, columnIndexes: columnIndexes)
         }
@@ -281,6 +286,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     }
 
     override func noteHeightOfRows(withIndexesChanged indexSet: IndexSet) {
+        blockEditAnimation.cancel()
         cancelFoldAnimation()
         tracedMutation("noteHeightOfRows") {
             super.noteHeightOfRows(withIndexesChanged: indexSet)
@@ -339,6 +345,16 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     }
 
     private var preparingVisibleRows = false
+    override func setFrameSize(_ newSize: NSSize) {
+        if abs(newSize.width - frame.width) > 0.5 { blockEditAnimation.cancel() }
+        super.setFrameSize(newSize)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { blockEditAnimation.cancel() }
+    }
+
     override func layout() {
         if let column = tableColumns.first, abs(column.width - bounds.width) > 0.5 {
             column.width = bounds.width
@@ -1664,17 +1680,45 @@ final class OutlineEditorController: NSObject {
         return out
     }
 
+    private func animateStructuralEdit(insertedID: UUID? = nil, removingIDs: Set<UUID> = [],
+                                       contentMove: (from: UUID, to: UUID)? = nil,
+                                       duration: CFTimeInterval = BlockEditAnimation.defaultDuration,
+                                       _ updates: () -> Void) {
+        defer { tableView.blockEditAnimation.didFinishEdit() }
+        // Merging into an empty block keeps its ID but moves the other block's text.
+        // Slide that text from its old row instead of fading a duplicate there.
+        let fadingIDs = contentMove.map { removingIDs.subtracting([$0.from]).union([$0.to]) }
+            ?? removingIDs
+        var snapshot = tableView.blockEditAnimation.prepare(
+            in: tableView, removingIDs: fadingIDs, rowAt: animationRow(at:))
+        if let move = contentMove, let position = snapshot?.positions[move.from] {
+            snapshot?.positions[move.to] = position
+        }
+        updates()
+        if let snapshot {
+            tableView.blockEditAnimation.animate(
+                in: tableView, from: snapshot, insertedID: insertedID,
+                duration: duration, rowAt: animationRow(at:))
+        }
+    }
+
+    private func animationRow(at index: Int) -> (id: UUID, depth: Int)? {
+        guard rows.indices.contains(index) else { return nil }
+        return (rows[index].block.id, rows[index].depth)
+    }
+
     /// Full reload from the store, then re-attaches the shared editor to the
     /// given block (if still visible).
     private func reloadAndFocus(
         _ id: UUID?, selection: NSRange?, reuseStaticRenders: Bool = true,
-        folding: Bool = false
+        folding: Bool = false, indenting: Bool = false
     ) {
+        tableView.blockEditAnimation.cancel()
         if !folding { tableView.cancelFoldAnimation() }
         let old = rows
         let previousFocus = focusedBlockID
         rebuildRows(reusingStaticRendersFrom: reuseStaticRenders ? old : nil)
-        if folding { remapSelection(from: old) }
+        if folding || indenting { remapSelection(from: old) }
         // Move the focus marker BEFORE applying row updates: unlike the old
         // full `reloadData()` (lazy — cells materialized after `attachEditor`
         // updated the marker), row-level reloads reconfigure synchronously, and
@@ -1688,7 +1732,7 @@ final class OutlineEditorController: NSObject {
         focusedBlockID = newFocus
         let reloadedIDs: Set<UUID>
         if reuseStaticRenders {
-            reloadedIDs = applyRowChanges(from: old, folding: folding)
+            reloadedIDs = applyRowChanges(from: old, folding: folding, indenting: indenting)
         } else {
             // Global style changes affect every row. Updating all their heights
             // in place makes AppKit prepare rows across the old and new frames.
@@ -1706,11 +1750,16 @@ final class OutlineEditorController: NSObject {
         }
         tableView.invalidateIntrinsicContentSize()
         if let newFocus {
-            // Folding leaves a surviving editor intact. Reattaching also scrolls
-            // to its caret, which can jump past the rows still animating.
-            if !folding || previousFocus != newFocus || editor.window == nil
+            // Keep the editor attached when only the outline structure changed.
+            // Reattaching repeats highlighting and text layout before the slide.
+            if !(folding || indenting) || previousFocus != newFocus || editor.window == nil
                 || reloadedIDs.contains(newFocus) {
                 attachEditor(to: newFocus, selection: selection, startSession: false)
+            } else if indenting {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.focusedBlockID == newFocus else { return }
+                    self.editor.revealCaret()
+                }
             }
         } else {
             editor.removeFromSuperview()
@@ -1722,7 +1771,8 @@ final class OutlineEditorController: NSObject {
     /// re-lays-out) each visible one — the dominant cost of a structural edit
     /// on a large page, where a split/indent/move touches only a couple of
     /// rows. Unchanged rows keep their live cells untouched.
-    private func applyRowChanges(from old: [Row], folding: Bool = false) -> Set<UUID> {
+    private func applyRowChanges(from old: [Row], folding: Bool = false,
+                                 indenting: Bool = false) -> Set<UUID> {
         guard tableView.numberOfRows == old.count else {
             return reloadAllRows()
         }
@@ -1767,6 +1817,7 @@ final class OutlineEditorController: NSObject {
         var oldByID: [UUID: Row] = [:]
         for row in old { oldByID[row.block.id] = row }
         var changed: [Int] = []
+        var reloaded: [Int] = []
         for (index, row) in rows.enumerated() {
             guard let prev = oldByID[row.block.id] else { continue } // freshly inserted
             let needsRenderReload = prev.rendered !== row.rendered
@@ -1775,6 +1826,24 @@ final class OutlineEditorController: NSObject {
                 || prev.depth != row.depth
                 || prev.hasChildren != row.hasChildren {
                 changed.append(index)
+                let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
+                    as? OutlineRowCell
+                if indenting, needsRenderReload, row.block.id == focusedBlockID, let cell,
+                   OutlineRowCell.enclosing(editor) === cell,
+                   editor.string == row.block.editableSource {
+                    // Typing leaves the static render stale. Refresh the row
+                    // without replacing or re-highlighting its editor.
+                    configure(cell, at: index)
+                } else if indenting && !needsRenderReload {
+                    cell?.updateStructure(
+                        depth: row.depth, hasChildren: row.hasChildren && row.block.id != zoom,
+                        collapsed: row.block.collapsed && row.block.id != zoom,
+                        isEmptyLeaf: Self.hidesBullet(
+                            content: row.block.content, hasChildren: row.hasChildren,
+                            isFocused: row.block.id == focusedBlockID, isOnlyRow: rows.count == 1))
+                } else {
+                    reloaded.append(index)
+                }
             } else if prev.block.collapsed != row.block.collapsed {
                 let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
                     as? OutlineRowCell
@@ -1783,15 +1852,17 @@ final class OutlineEditorController: NSObject {
         }
         if !changed.isEmpty {
             let previousHeights = changed.map { tableView.rect(ofRow: $0).height }
-            tableView.reloadData(
-                forRowIndexes: IndexSet(changed), columnIndexes: IndexSet(integer: 0))
+            if !reloaded.isEmpty {
+                tableView.reloadData(
+                    forRowIndexes: IndexSet(reloaded), columnIndexes: IndexSet(integer: 0))
+            }
             let heightChanges = zip(changed, previousHeights).compactMap { index, previous in
                 abs(previous - self.tableView(tableView, heightOfRow: index)) > 0.5
                     ? index : nil
             }
             noteHeightChanged(heightChanges)
         }
-        return Set(changed.map { rows[$0].block.id })
+        return Set(reloaded.map { rows[$0].block.id })
     }
 
     private func reloadRow(_ index: Int) {
@@ -1883,6 +1954,7 @@ final class OutlineEditorController: NSObject {
     // MARK: - Focus and the shared editor
 
     func focusBlock(_ id: UUID, selection: NSRange?) {
+        tableView.blockEditAnimation.cancel()
         // Editing exits node selection everywhere. Clear another editor's
         // selection (journal home / panes) if it owns one…
         if let owner = Self.selectionOwner, owner !== self { owner.clearSelection() }
@@ -2257,8 +2329,10 @@ final class OutlineEditorController: NSObject {
         if doc.blocks.isEmpty { doc.blocks = [Block(content: "")] } // keep one block
         guard commitStructural(doc, label: Self.removalLabel(count: ids.count, isCut: labelledCut))
         else { return false }
-        clearSelection()
-        reloadAndFocus(nil, selection: nil)
+        animateStructuralEdit(removingIDs: Set(subtreeIDs)) {
+            clearSelection()
+            reloadAndFocus(nil, selection: nil)
+        }
         return true
     }
 
@@ -2297,9 +2371,6 @@ final class OutlineEditorController: NSObject {
     /// contiguous siblings, else it's a no-op. A single block keeps the classic
     /// outdent (which adopts trailing siblings); a run uses a plain group-lift.
     private func indentOutdentSelection(outdent: Bool) {
-        let selectedIDs = Set(selectedRows.compactMap {
-            rows.indices.contains($0) ? rows[$0].block.id : nil
-        })
         let ids = topMostSelectedRows().compactMap {
             rows.indices.contains($0) ? rows[$0].block.id : nil
         }
@@ -2317,9 +2388,9 @@ final class OutlineEditorController: NSObject {
         }
         guard ok else { return }
         guard commitStructural(doc, label: outdent ? "Outdent" : "Indent") else { return }
-        reloadAndFocus(nil, selection: nil)
-        let newSelection = Set(rows.indices.filter { selectedIDs.contains(rows[$0].block.id) })
-        if !newSelection.isEmpty { setSelection(newSelection, anchor: newSelection.min()) }
+        animateStructuralEdit(duration: BlockEditAnimation.indentationDuration) {
+            reloadAndFocus(nil, selection: nil, indenting: true)
+        }
     }
 
     /// ⌥↑/⌥↓ with a node selection: moves the selected blocks (subtrees) as one
@@ -2899,12 +2970,14 @@ final class OutlineEditorController: NSObject {
         let previousID = index > 0 ? rows[index - 1].block.id : nil
         _ = OutlineOps.delete(path, in: &doc.blocks)
         guard commitStructural(doc, label: "Delete Block") else { return }
-        reloadAndFocus(wasFocused ? nil : focusedBlockID, selection: nil)
-        if wasFocused, let previousID,
-           let prev = app.document(for: pageName).blocks.block(id: previousID) {
-            let end = (prev.content as NSString).length
-            attachEditor(to: previousID, selection: NSRange(location: end, length: 0),
-                         startSession: false)
+        animateStructuralEdit(removingIDs: Set(subtreeIDs)) {
+            reloadAndFocus(wasFocused ? nil : focusedBlockID, selection: nil)
+            if wasFocused, let previousID,
+               let prev = app.document(for: pageName).blocks.block(id: previousID) {
+                let end = (prev.content as NSString).length
+                attachEditor(to: previousID, selection: NSRange(location: end, length: 0),
+                             startSession: false)
+            }
         }
     }
 
@@ -3005,6 +3078,10 @@ extension OutlineEditorController: FindParticipant {
 
 extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
 
+    func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
+        self.tableView.blockEditAnimation.remove(rowView: rowView)
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int {
         rows.count // an empty outline gets a real block instead (§5.4)
     }
@@ -3024,6 +3101,12 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             cell.cancelFlash()
             flashedCell = nil
         }
+        configure(cell, at: row)
+        return cell
+    }
+
+    private func configure(_ cell: OutlineRowCell, at row: Int) {
+        let model = rows[row]
         var isQuote = false
         var isCode = false
         switch BlockKind.classify(model.block.content) {
@@ -3075,7 +3158,6 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             // A pure-embed block hands its bullet to the transcluded subtree.
             if isPureEmbed { cell.setBulletHidden(true) }
         }
-        return cell
     }
 
     /// Returns a copy of the row's rendered text with find matches highlighted
@@ -3272,15 +3354,23 @@ extension OutlineEditorController: BlockEditorActions {
             return
         }
         guard commitStructural(doc, label: "New Block") else { return }
-        reloadAndFocus(newID, selection: NSRange(location: 0, length: 0))
+        // Enter at the start inserts above and keeps focus on the original block.
+        let insertedID = newID == id ? doc.blocks.block(at: path)?.id : newID
+        animateStructuralEdit(insertedID: insertedID) {
+            reloadAndFocus(newID, selection: NSRange(location: 0, length: 0))
+        }
     }
 
     func editorIndent() {
-        structuralOnFocused(label: "Indent") { OutlineOps.indent($0, in: &$1) }
+        structuralOnFocused(label: "Indent", indenting: true) {
+            OutlineOps.indent($0, in: &$1)
+        }
     }
 
     func editorOutdent() {
-        structuralOnFocused(label: "Outdent") { OutlineOps.outdent($0, in: &$1) }
+        structuralOnFocused(label: "Outdent", indenting: true) {
+            OutlineOps.outdent($0, in: &$1)
+        }
     }
 
     func editorMoveBlock(by delta: Int) {
@@ -3308,13 +3398,20 @@ extension OutlineEditorController: BlockEditorActions {
         reloadAndFocus(id, selection: NSRange(location: caret, length: 0))
     }
 
-    private func structuralOnFocused(label: String, _ op: ([Int], inout [Block]) -> Bool) {
+    private func structuralOnFocused(label: String, indenting: Bool = false,
+                                     _ op: ([Int], inout [Block]) -> Bool) {
         guard let id = focusedBlockID else { return }
         let selection = editor.selectedRange()
         var doc = app.document(for: pageName)
         guard let path = doc.blocks.path(to: id), op(path, &doc.blocks) else { return }
         guard commitStructural(doc, label: label) else { return }
-        reloadAndFocus(id, selection: selection)
+        if indenting {
+            animateStructuralEdit(duration: BlockEditAnimation.indentationDuration) {
+                reloadAndFocus(id, selection: selection, indenting: true)
+            }
+        } else {
+            reloadAndFocus(id, selection: selection)
+        }
     }
 
     func editorDeleteEmptyBlock() {
@@ -3341,7 +3438,11 @@ extension OutlineEditorController: BlockEditorActions {
         guard commitStructural(doc, label: "Merge Blocks") else { return }
         let content = doc.blocks.block(id: receiver)?.content ?? ""
         let caret = Self.utf16Offset(forCharacterOffset: characterOffset, in: content)
-        reloadAndFocus(receiver, selection: NSRange(location: caret, length: 0))
+        let contentMove = rows[index - 1].block.editableSource.isEmpty
+            ? (from: id, to: receiver) : nil
+        animateStructuralEdit(removingIDs: [id], contentMove: contentMove) {
+            reloadAndFocus(receiver, selection: NSRange(location: caret, length: 0))
+        }
     }
 
     func editorMergeWithNext() {
@@ -3359,7 +3460,11 @@ extension OutlineEditorController: BlockEditorActions {
         guard let nextPath = doc.blocks.path(to: next.block.id),
               OutlineOps.mergeWithPrevious(nextPath, in: &doc.blocks) != nil else { return }
         guard commitStructural(doc, label: "Merge Blocks") else { return }
-        reloadAndFocus(id, selection: NSRange(location: caretOffset, length: 0))
+        let contentMove = rows[index].block.editableSource.isEmpty
+            ? (from: next.block.id, to: id) : nil
+        animateStructuralEdit(removingIDs: [next.block.id], contentMove: contentMove) {
+            reloadAndFocus(id, selection: NSRange(location: caretOffset, length: 0))
+        }
     }
 
     func editorEndEditing() {
