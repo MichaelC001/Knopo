@@ -245,6 +245,11 @@ struct KnopoApp: App {
             // All graph-scoped actions target whichever window is focused.
             GraphCommands()
             NavigationCommands()
+            CommandGroup(replacing: .help) {
+                Link("Knopo Help", destination: URL(
+                    string: "https://github.com/alkalim/Knopo/blob/main/docs/features.md")!)
+                    .keyboardShortcut("?", modifiers: .command)
+            }
         }
 
         Settings {

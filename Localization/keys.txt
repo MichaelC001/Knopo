@@ -85,6 +85,7 @@ Journal	Sidebar section and window title: the journal
 Journals
 Jump to Day…
 Jump to day
+Knopo Help
 Label	Link panel: the link's visible text
 Light	Appearance theme
 Link

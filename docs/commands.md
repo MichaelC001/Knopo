@@ -4,6 +4,8 @@ This page lists slash commands, autocomplete controls, keyboard shortcuts, and
 the main pointer actions. See the [user guide](features.md) for the concepts and
 [Query syntax](query-syntax.md) for query expressions.
 
+Choose **Help > Knopo Help** (`⌘?`) to open the user guide on GitHub in your browser.
+
 Shortcut symbols follow macOS conventions: `⌘` Command, `⌥` Option, `⇧` Shift,
 and `⌃` Control.
 
