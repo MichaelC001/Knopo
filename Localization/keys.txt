@@ -3,6 +3,10 @@
 # English text, so this file is also the translator's source list.
 # A key may be followed by a tab and its source comment, which
 # --template passes on to the translator.
+[Animations]
+Off	Animations disabled
+On	Animations enabled
+System	Animations follow macOS Reduce Motion
 [FontWeight]
 Heavy	Body font weight
 Light	Body font weight
@@ -17,6 +21,7 @@ Abbreviated	Journal date format: shortened month name, Jun 10, 2026
 Actual Size
 Add to Favourites
 All Pages	Sidebar section and window title: the page list
+Animations
 Appearance
 Appearance preview
 Back
@@ -136,6 +141,7 @@ Show brackets around page links
 Some files could not be imported.	Alert title after failed image or PDF imports
 Start typing, or / for commands	Placeholder in the only, empty block of a page
 System	Appearance theme
+System follows the macOS Reduce Motion setting.
 Tag view — generated, read-only. Tags are labels, not pages.
 Tags
 That name belongs to a built-in format.	Custom journal date pattern: it spells a built-in style's name

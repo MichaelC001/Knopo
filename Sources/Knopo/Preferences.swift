@@ -21,9 +21,30 @@ final class Preferences: ObservableObject {
         }
     }
 
+    enum Animations: String, CaseIterable {
+        case system, on, off
+
+        var title: String {
+            switch self {
+            case .system: return String(localized: "System", table: "Animations", comment: "Animations follow macOS Reduce Motion")
+            case .on: return String(localized: "On", table: "Animations", comment: "Animations enabled")
+            case .off: return String(localized: "Off", table: "Animations", comment: "Animations disabled")
+            }
+        }
+
+        func isEnabled(reduceMotion: Bool) -> Bool {
+            switch self {
+            case .system: return !reduceMotion
+            case .on: return true
+            case .off: return false
+            }
+        }
+    }
+
     static let standard = Preferences()
 
     static let themeKey = "appearanceTheme"
+    static let animationsKey = "animations"
     static let defaultDateFormatKey = BlockRenderer.journalDateFormatKey
     /// The last custom date pattern the user typed, kept so switching to a
     /// built-in style and back does not discard it. Not a render input.
@@ -31,6 +52,8 @@ final class Preferences: ObservableObject {
 
     private let defaults: UserDefaults
     private let syncsRenderer: Bool
+    private let reduceMotion: () -> Bool
+    private var accessibilityObserver: AnyCancellable?
     private var themeWasSet: Bool
     private var dateFormatWasSet: Bool
 
@@ -42,6 +65,15 @@ final class Preferences: ObservableObject {
             if syncsRenderer { Self.apply(theme) }
         }
     }
+
+    @Published var animations: Animations {
+        didSet {
+            guard animations != oldValue else { return }
+            defaults.set(animations.rawValue, forKey: Self.animationsKey)
+            updateAnimationsEnabled()
+        }
+    }
+    @Published private(set) var animationsEnabled: Bool
 
     @Published var contentWeight: BlockRenderer.ContentWeight {
         didSet {
@@ -96,9 +128,16 @@ final class Preferences: ObservableObject {
     /// measurements to be rebuilt in every open graph.
     @Published private(set) var renderRevision = 0
 
-    init(defaults: UserDefaults = .standard, syncsRenderer: Bool = true) {
+    init(defaults: UserDefaults = .standard, syncsRenderer: Bool = true,
+         reduceMotion: @escaping () -> Bool = {
+             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+         }) {
         self.defaults = defaults
         self.syncsRenderer = syncsRenderer
+        self.reduceMotion = reduceMotion
+        let animations = Animations(rawValue: defaults.string(forKey: Self.animationsKey) ?? "") ?? .system
+        self.animations = animations
+        animationsEnabled = animations.isEnabled(reduceMotion: reduceMotion())
         themeWasSet = defaults.object(forKey: Self.themeKey) != nil
         dateFormatWasSet = defaults.object(forKey: Self.defaultDateFormatKey) != nil
         theme = Theme(rawValue: defaults.string(forKey: Self.themeKey) ?? "") ?? .system
@@ -129,6 +168,15 @@ final class Preferences: ObservableObject {
             BlockRenderer.zoom = zoom
             BlockRenderer.density = density
         }
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateAnimationsEnabled() }
+    }
+
+    private func updateAnimationsEnabled() {
+        let enabled = animations.isEnabled(reduceMotion: reduceMotion())
+        if enabled != animationsEnabled { animationsEnabled = enabled }
     }
 
     /// Imports the old per-graph theme exactly once. The first graph opened on

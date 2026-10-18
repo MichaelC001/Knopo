@@ -27,16 +27,16 @@ view, so a new graph opens on today's notes.
 ## Settings
 
 Choose **Knopo > Settings…** (`⌘,`) for preferences that apply to the whole app:
-the system/light/dark theme, body font weight, page-link brackets, and the
-default journal date format copied to new graphs. Existing graphs keep their
-own format.
+the system/light/dark theme, animations, body font weight, page-link brackets,
+and the journal date format used in every graph. Animations default to System,
+which follows macOS Reduce Motion; On and Off override it.
 The date picker includes common presets and custom Unicode date patterns;
 `d{ordinal}` adds the English `st`/`nd`/`rd`/`th` suffix.
 
 Settings that travel with a graph live in that graph's own sheet. Choose
 **File > Graph Settings…** (`⌥⌘,`), or hover over the graph name in the window
-toolbar and click its gear. There you can choose the graph's journal date
-format and see or rebuild its search index. Changes apply immediately. Zoom and
+toolbar and click its gear. There you can see or rebuild its search index.
+Changes apply immediately. Zoom and
 line spacing remain repeatable View menu commands with keyboard shortcuts.
 
 ## Blocks and outlines

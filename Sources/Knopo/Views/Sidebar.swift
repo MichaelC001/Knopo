@@ -122,6 +122,12 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .transaction { transaction in
+            if !app.preferences.animationsEnabled {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
         .frame(maxHeight: .infinity)
         .onAppear { mergeRecents() }
         .onChange(of: app.dataVersion) { _, _ in mergeRecents() }

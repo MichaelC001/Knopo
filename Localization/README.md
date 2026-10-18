@@ -44,6 +44,7 @@ Right-to-left languages, such as Arabic, are not supported yet.
 | `Localizable.strings` | Almost everything: menus, buttons, alerts, labels. |
 | `Localizable.stringsdict` | The five strings that count things, which need plural rules. |
 | `FontWeight.strings` | Three words, kept apart on purpose - see below. |
+| `Animations.strings` | System, On and Off for the animation preference. |
 
 `Localization/keys.txt` is the full list of source strings, regenerated from the
 code. It is what the template is built from.
@@ -72,6 +73,10 @@ Chinese, 在页面中查找 twice.
 **`FontWeight.strings` exists because "Light" means two things** - the appearance
 theme and the body font weight (German: *Hell* vs *Light*). The theme is in
 `Localizable.strings`; the weight is here.
+
+**`Animations.strings` keeps "System" apart from the theme's "System".**
+Translate it as following the system's animation preference. Its wording may
+need to agree with a different noun than the appearance theme.
 
 ## Plurals
 

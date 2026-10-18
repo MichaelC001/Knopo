@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import Combine
 import Testing
 @testable import Knopo
 import KnopoCore
@@ -23,6 +24,7 @@ struct PreferencesTests {
     @Test func defaultsAndStoredBounds() {
         let empty = Preferences(defaults: defaults(), syncsRenderer: false)
         #expect(empty.theme == .system)
+        #expect(empty.animations == .system)
         #expect(empty.contentWeight == .medium)
         #expect(!empty.showPageRefBrackets)
         #expect(empty.defaultDateFormat == .default)
@@ -46,6 +48,54 @@ struct PreferencesTests {
         let restored = Preferences(defaults: runtimeStore, syncsRenderer: false)
         #expect(restored.zoom == BlockRenderer.maxZoom)
         #expect(restored.density == BlockRenderer.minDensity)
+    }
+
+    @Test(arguments: [false, true])
+    func animationModesPersistAndOverrideReduceMotion(reduceMotion: Bool) {
+        let store = defaults()
+        let preferences = Preferences(defaults: store, syncsRenderer: false, reduceMotion: { reduceMotion })
+        for (mode, enabled) in [(Preferences.Animations.system, !reduceMotion), (.on, true), (.off, false)] {
+            preferences.animations = mode
+            #expect(preferences.animationsEnabled == enabled)
+            let restored = Preferences(defaults: store, syncsRenderer: false, reduceMotion: { reduceMotion })
+            #expect(restored.animations == mode)
+            #expect(restored.animationsEnabled == enabled)
+            #expect(preferences.renderRevision == 0)
+        }
+        store.set("unknown", forKey: Preferences.animationsKey)
+        let fallback = Preferences(defaults: store, syncsRenderer: false, reduceMotion: { reduceMotion })
+        #expect(fallback.animations == .system)
+        #expect(fallback.animationsEnabled == !reduceMotion)
+    }
+
+    @Test func animationChangesRefreshEveryGraphWithoutInvalidatingDocuments() async throws {
+        var reduceMotion = false
+        let preferences = Preferences(defaults: defaults(), syncsRenderer: false, reduceMotion: { reduceMotion })
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knopo-motion-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = AppState(store: try GraphStore(root: root.appendingPathComponent("first")), preferences: preferences)
+        let second = AppState(store: try GraphStore(root: root.appendingPathComponent("second")), preferences: preferences)
+        defer { first.shutdown(); second.shutdown() }
+        let versions = [first.dataVersion, second.dataVersion]
+        var changes = [0, 0]
+        let observers = [first, second].enumerated().map { index, app in
+            app.objectWillChange.sink { changes[index] += 1 }
+        }
+        defer { observers.forEach { $0.cancel() } }
+        preferences.animations = .off
+        #expect(changes == [1, 1])
+        preferences.animations = .system
+        #expect(preferences.animationsEnabled)
+        reduceMotion = true
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        try await waitUntil { !preferences.animationsEnabled }
+        #expect(changes == [3, 3])
+        preferences.animations = .on
+        #expect(preferences.animationsEnabled)
+        #expect(changes == [4, 4])
+        #expect([first.dataVersion, second.dataVersion] == versions)
+        #expect(preferences.renderRevision == 0)
     }
 
     @Test func valuesPersistAndThemeMigratesOnlyOnce() {

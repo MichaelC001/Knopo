@@ -21,6 +21,7 @@ struct OutlineRowCallbacks {
     var beginDrag: (NSEvent, NSView) -> Void = { _, _ in }
     /// Resizes the n-th image token in this block to the given display width.
     var resizeImage: (_ imageIndex: Int, _ width: CGFloat) -> Void = { _, _ in }
+    var animationsEnabled: () -> Bool = { true }
 }
 
 /// One outline row (SPEC §5.4): indentation by depth, fold triangle, bullet
@@ -54,6 +55,8 @@ final class OutlineRowCell: NSTableCellView {
     private let codeBackground = CodeBackgroundView(frame: .zero)
     private let embedBackground = EmbedBackgroundView(frame: .zero)
     private let colorBackground = ColorBoxView(frame: .zero)  // background-color:: box
+    // The full-width selection fill stays still while the content slides.
+    var indentationAnimationViews: [NSView] { [foldButton, bullet, container] }
     private var blockColor: NSColor?
     private var depth = 0
     private var isQuote = false
@@ -61,8 +64,8 @@ final class OutlineRowCell: NSTableCellView {
     private var isEmbed = false
     /// First line's pinned height, so the bullet/fold center against it.
     private var firstLineHeight: CGFloat = 17
-    private var isSelectedBlock = false
-    private var previewPopover: NSPopover?
+    private(set) var isSelectedBlock = false
+    private(set) var previewPopover: NSPopover?
     /// The fold chevron only appears while the pointer is over the row (like
     /// Logseq) — otherwise it's visual noise. These track the two inputs.
     private var rowHasChildren = false
@@ -147,7 +150,7 @@ final class OutlineRowCell: NSTableCellView {
         self.blockColor = blockColor
         colorBackground.color = blockColor ?? .clear
         colorBackground.isHidden = blockColor == nil
-        if isSelectedBlock != selected { isSelectedBlock = selected; needsDisplay = true }
+        setBlockSelected(selected)
         renderedView.onSelectRequest = { [weak self] extend, toggle in
             self?.callbacks.selectBlock(extend, toggle)
         }
@@ -160,13 +163,34 @@ final class OutlineRowCell: NSTableCellView {
             hovering = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
         }
         updateFoldVisibility()
+        updateFoldState(collapsed: collapsed)
+        // An empty leaf block hides its bullet (nothing to zoom/fold/reference);
+        // the gutter space stays so text never shifts horizontally.
+        bullet.isHidden = isEmptyLeaf
+        needsLayout = true
+    }
+
+    func setBlockSelected(_ selected: Bool) {
+        guard isSelectedBlock != selected else { return }
+        isSelectedBlock = selected
+        needsDisplay = true
+    }
+
+    func updateFoldState(collapsed: Bool) {
         let symbol = collapsed ? "chevron.right" : "chevron.down"
         foldButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 8 * BlockRenderer.zoom, weight: .bold))
         foldButton.contentTintColor = .tertiaryLabelColor
         bullet.isCollapsed = collapsed
-        // An empty leaf block hides its bullet (nothing to zoom/fold/reference);
-        // the gutter space stays so text never shifts horizontally.
+    }
+
+    /// Indenting keeps the text and its editor in place. Only geometry changes.
+    func updateStructure(depth: Int, hasChildren: Bool, collapsed: Bool, isEmptyLeaf: Bool) {
+        self.depth = depth
+        rowHasChildren = hasChildren
+        closePreview()
+        updateFoldVisibility()
+        updateFoldState(collapsed: collapsed)
         bullet.isHidden = isEmptyLeaf
         needsLayout = true
     }
@@ -336,7 +360,8 @@ final class OutlineRowCell: NSTableCellView {
     /// Whether a flash is on this cell right now.
     var isFlashing: Bool { flashOverlay != nil }
 
-    func flash() {
+    func flash(animationsEnabled: (() -> Bool)? = nil) {
+        let animationsEnabled = animationsEnabled ?? callbacks.animationsEnabled
         cancelFlash()
         let overlay = NSView(frame: bounds)
         overlay.wantsLayer = true
@@ -349,7 +374,7 @@ final class OutlineRowCell: NSTableCellView {
         let fade = DispatchWorkItem { [weak self, weak overlay] in
             guard let overlay, self?.flashOverlay === overlay else { return }
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 1.0
+                ctx.duration = animationsEnabled() ? 1.0 : 0
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 overlay.animator().alphaValue = 0
             }, completionHandler: {
@@ -525,6 +550,7 @@ final class OutlineRowCell: NSTableCellView {
         let controller = NSViewController()
         controller.view = scroll
         let popover = NSPopover()
+        popover.animates = callbacks.animationsEnabled()
         // Not `.transient`: that closes on the next click and swallows it, so
         // the link you are hovering never gets clicked. This one is closed by
         // the hover ending, or by the click, which then lands.
@@ -551,6 +577,7 @@ final class OutlineRowCell: NSTableCellView {
         let controller = NSViewController()
         controller.view = view
         let popover = NSPopover()
+        popover.animates = callbacks.animationsEnabled()
         popover.behavior = .applicationDefined
         popover.contentViewController = controller
         popover.contentSize = box
@@ -562,6 +589,7 @@ final class OutlineRowCell: NSTableCellView {
     }
 
     private func closePreview() {
+        previewPopover?.animates = callbacks.animationsEnabled()
         previewPopover?.close()
         previewPopover = nil
     }

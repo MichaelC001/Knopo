@@ -4,6 +4,7 @@ import KnopoCore
 private enum SettingsLayout {
     static let width: CGFloat = 520
     static let height: CGFloat = 430
+    static let generalHeight: CGFloat = 500
 }
 
 struct GeneralSettingsView: View {
@@ -18,6 +19,14 @@ struct GeneralSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                Picker("Animations", selection: $preferences.animations) {
+                    ForEach(Preferences.Animations.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .help("System follows the macOS Reduce Motion setting.")
 
                 Picker("Body font weight", selection: $preferences.contentWeight) {
                     ForEach(BlockRenderer.ContentWeight.allCases, id: \.self) { weight in
@@ -44,7 +53,7 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: SettingsLayout.width, height: SettingsLayout.height)
+        .frame(width: SettingsLayout.width, height: SettingsLayout.generalHeight)
         .navigationTitle("Settings")
     }
 

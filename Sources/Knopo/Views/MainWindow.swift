@@ -13,6 +13,7 @@ struct MainWindow: View {
     /// makes it scale with the window and restore correctly at any window size.
     @State private var rightFraction: CGFloat?
     @State private var dragStartWidth: CGFloat?
+    @StateObject private var sidebarTransition = SidebarTransition.State()
 
     private let mainMinWidth: CGFloat = 320
     private let rightMinWidth: CGFloat = 280
@@ -23,9 +24,8 @@ struct MainWindow: View {
         // closure isn't enough; SwiftUI doesn't re-run it on every nav change.
         let backTitles = nav.backTitles
         let forwardTitles = nav.forwardTitles
-        // NavigationSplitView gives the left sidebar the native source-list
-        // material and the standard collapse toolbar button.
-        return NavigationSplitView {
+        // Keep the native source-list material and resizable divider.
+        return NavigationSplitView(columnVisibility: sidebarTransition.visibility) {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 320)
         } detail: {
@@ -47,7 +47,8 @@ struct MainWindow: View {
                                 light: .textBackgroundColor, dark: .windowBackgroundColor)))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .animation(.easeOut(duration: 0.18), value: nav.findActive)
+                    .animation(app.preferences.animationsEnabled ? .easeOut(duration: 0.18) : nil,
+                               value: nav.findActive)
                     if !nav.rightPanes.isEmpty {
                         resizeHandle(available: geo.size.width)
                         RightSidebar()
@@ -57,6 +58,8 @@ struct MainWindow: View {
                 }
             }
         }
+        .background(SidebarTransition.WindowAttachment(state: sidebarTransition,
+                                                       preferences: app.preferences))
         // A visible window-toolbar background gives the tab bar a proper opaque
         // strip, so the system "+" button is centered in it rather than
         // floating (asymmetrically clipped) over the content.

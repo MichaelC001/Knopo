@@ -33,6 +33,19 @@ import KnopoCore
         #expect(cell.subviews.count == plain)   // the overlay is gone, not just faded
     }
 
+    @Test(arguments: [false, true])
+    func flashKeepsItsCueButOnlyFadesWhenAnimationsAreEnabled(enabled: Bool) async throws {
+        let (cell, window) = cellInWindow()
+        window.orderFront(nil)
+        defer { cell.cancelFlash(); window.orderOut(nil) }
+        var fadeStarted = false
+        cell.flash(animationsEnabled: { fadeStarted = true; return enabled })
+        #expect(cell.isFlashing)
+        try await waitUntil { fadeStarted }
+        if enabled { #expect(cell.isFlashing) }
+        else { try await waitUntil { !cell.isFlashing } }
+    }
+
     /// A redone reveal flashes the same cell again — one overlay, not a stack of
     /// them deepening the colour and outliving each other.
     @Test func flashingTwiceLeavesOneOverlay() {
