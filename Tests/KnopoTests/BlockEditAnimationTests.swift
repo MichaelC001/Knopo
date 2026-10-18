@@ -6,6 +6,95 @@ import KnopoCore
 
 @MainActor
 @Suite struct BlockEditAnimationTests {
+    @Test func selectionFollowsBlocksAcrossReloadAndClearsEveryFill() async throws {
+        let blocks = [Block(content: "A"), Block(content: "B"), Block(content: "C")]
+        try await withOutline(blocks: blocks) { app, controller, table, window in
+            func selectedCells() -> Set<Int> {
+                Set((0..<table.numberOfRows).filter {
+                    (table.view(atColumn: 0, row: $0, makeIfNecessary: true)
+                        as? OutlineRowCell)?.isSelectedBlock == true
+                })
+            }
+            controller.selectViaClick(blocks[1].id, extend: false, toggle: false)
+            #expect(selectedCells() == [1])
+            let selection = controller.selectionMarkdown()
+            var document = app.document(for: "Insertion")
+            document.blocks.insert(Block(content: "Inserted before selection"), at: 0)
+            app.commit(document)
+            try await waitUntil { table.numberOfRows == 4 }
+            try await settle(window)
+            #expect(controller.selectionMarkdown() == selection)
+            #expect(selectedCells() == [2])
+
+            controller.selectViaClick(blocks[2].id, extend: true, toggle: false)
+            #expect(selectedCells() == [2, 3])
+            controller.selectViaClick(blocks[0].id, extend: false, toggle: false)
+            #expect(selectedCells() == [1])
+            let escape = try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "\u{1b}",
+                charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+            table.keyDown(with: escape)
+            #expect(selectedCells().isEmpty)
+            #expect(controller.selectionMarkdown() == nil)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func deletingSelectedEmptyBlockKeepsFollowingRowHeights(reduceMotion: Bool) async throws {
+        let empty = Block(content: "")
+        let parent = Block(content: "Yet another block", children: [
+            empty, Block(content: "Third block"),
+            Block(content: String(repeating: "Use memory heap or alternative to store the in-memory RC; ", count: 4))
+        ])
+        try await withOutline(blocks: [Block(content: "My little block"), parent],
+                              reduceMotion: reduceMotion) { app, controller, table, window in
+            controller.focusBlock(empty.id, selection: NSRange(location: 0, length: 0))
+            controller.selectViaClick(empty.id, extend: false, toggle: false)
+            try await settle(window)
+            #expect(controller.deleteSelection())
+            try await settle(window)
+            #expect(table.numberOfRows == 4)
+            #expect(app.document(for: "Insertion").blocks[1].children.count == 2)
+            for index in 0..<table.numberOfRows {
+                let expected = controller.tableView(table, heightOfRow: index)
+                #expect(abs(table.rect(ofRow: index).height - expected) < 1,
+                        "Row \(index) has stale height")
+                let row = try #require(table.rowView(atRow: index, makeIfNecessary: true))
+                #expect(abs(row.frame.height - expected) < 1)
+            }
+        }
+    }
+
+    @Test func animationPreferenceAppliesToAnAlreadyOpenEditor() async throws {
+        let name = "knopo-animation-preference-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let preferences = Preferences(defaults: defaults, syncsRenderer: false, reduceMotion: { true })
+        try await withOutline(preferences: preferences) { app, controller, table, window in
+            controller.focusBlock(app.document(for: "Insertion").blocks[0].id,
+                                  selection: NSRange(location: 6, length: 0))
+            preferences.animations = .off
+            controller.editorSplit(atUTF16Offset: 6)
+            #expect(table.numberOfRows == 4)
+            #expect(animatedRows(table) == 0)
+            try await settle(window)
+            preferences.animations = .on
+            controller.editorIndent()
+            #expect(animatedRows(table) > 0)
+            try await settle(window)
+            preferences.animations = .system
+            controller.editorOutdent()
+            #expect(animatedRows(table) == 0)
+            try await settle(window)
+            preferences.animations = .on
+            controller.editorDeleteEmptyBlock()
+            #expect(table.numberOfRows == 3)
+            #expect(table.blockEditAnimation.removalSnapshotCount == 1)
+            try await settle(window)
+        }
+    }
+
     @Test(arguments: [0, 3, 6], [false, true])
     func enterAnimatesWithoutDelayingFocus(offset: Int, reduceMotion: Bool) async throws {
         try await withOutline(reduceMotion: reduceMotion) { app, controller, table, window in
@@ -88,7 +177,7 @@ import KnopoCore
     }
 
     @Test func largeSharedOutlineOnlyAnimatesVisibleRows() async throws {
-        try await withOutline(count: 400, shared: true, animationClock: { 0 }) {
+        try await withOutline(count: 400, shared: true, reduceMotion: false, animationClock: { 0 }) {
             app, controller, table, window in
             controller.focusBlock(app.document(for: "Insertion").blocks[0].id,
                                   selection: NSRange(location: 3, length: 0))
@@ -107,11 +196,9 @@ import KnopoCore
             #expect(table.numberOfRows == 401)
             #expect(liveRows < 100)
             #expect(animatedRows(table) < 30)
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                #expect(animatedRows(table) > 0)
-                #expect(!leavingRow.frame.intersects(table.visibleRect))
-                #expect(hasAnimation(leavingRow))
-            }
+            #expect(animatedRows(table) > 0)
+            #expect(!leavingRow.frame.intersects(table.visibleRect))
+            #expect(hasAnimation(leavingRow))
             controller.editorIndent()
             #expect(animatedRows(table) == 0)
             #expect(window.firstResponder === editor)
@@ -550,6 +637,7 @@ import KnopoCore
     private func withOutline(
         count: Int = 3, blocks: [Block]? = nil, shared: Bool = false,
         reduceMotion: Bool? = nil, animationClock: @escaping () -> CFTimeInterval = CACurrentMediaTime,
+        preferences: Preferences? = nil,
         _ body: (AppState, OutlineEditorController, OutlineTableView, NSWindow) async throws -> Void
     ) async throws {
         let root = FileManager.default.temporaryDirectory
@@ -560,7 +648,7 @@ import KnopoCore
         page.blocks = blocks ?? ([Block(content: "Before")]
             + (1..<count).map { Block(content: "Following \($0)") })
         store.updatePage(page)
-        let app = AppState(store: store)
+        let app = AppState(store: store, preferences: preferences ?? .standard)
         defer { app.shutdown() }
         let nav = Navigator(app: app)
         let host = NSHostingView(rootView: ScrollView {
@@ -576,10 +664,12 @@ import KnopoCore
         defer { window.contentView = nil }
         try await settle(window)
         let table = try #require(descendants(host, of: OutlineTableView.self).first)
-        table.blockEditAnimation = BlockEditAnimation(
-            currentTime: animationClock, reducesMotion: {
-                reduceMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            })
+        if preferences == nil {
+            table.blockEditAnimation = BlockEditAnimation(
+                currentTime: animationClock, reducesMotion: {
+                    reduceMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                })
+        }
         let controller = try #require(table.delegate as? OutlineEditorController)
         defer { controller.endEditing() }
         try await body(app, controller, table, window)

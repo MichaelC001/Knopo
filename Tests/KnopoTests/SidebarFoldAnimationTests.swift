@@ -6,8 +6,8 @@ import KnopoCore
 
 @MainActor
 @Suite struct SidebarFoldAnimationTests {
-    @Test func cardFoldsMoveFollowingCardsAndRespectReduceMotion() async throws {
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    @Test(arguments: Preferences.Animations.allCases)
+    func cardFoldsMoveFollowingCardsAndRespectAnimationPreference(mode: Preferences.Animations) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("knopo-sidebar-fold-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -17,7 +17,11 @@ import KnopoCore
             page.blocks = (0..<3).map { Block(content: "\(name) block \($0)") }
             store.updatePage(page)
         }
-        let app = AppState(store: store)
+        let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
+        defer { defaults.removePersistentDomain(forName: root.lastPathComponent) }
+        let preferences = Preferences(defaults: defaults, syncsRenderer: false, reduceMotion: { true })
+        preferences.animations = mode
+        let app = AppState(store: store, preferences: preferences)
         defer { app.shutdown() }
         let nav = Navigator(app: app)
         nav.rightPanes = [RightPane(target: .page(name: "Alpha")),
@@ -58,7 +62,7 @@ import KnopoCore
             let intermediate = positions.filter {
                 $0 > min(startY, endY) + 1 && $0 < max(startY, endY) - 1
             }
-            #expect(intermediate.isEmpty == reduceMotion)
+            #expect(intermediate.isEmpty == (mode != .on))
             #expect(tables(host).count == (collapsed ? 1 : 2))
             #expect(window.firstResponder === editor)
             #expect(editor.selectedRange() == NSRange(location: 2, length: 3))

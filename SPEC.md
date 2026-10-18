@@ -544,6 +544,7 @@ Settings have two ownership tiers and apply immediately:
 | Surface | Setting | Default / behavior |
 |---|---|---|
 | General (`Cmd+,`) | Theme | Follow the system; light and dark overrides are app-wide. A legacy per-graph theme is imported once. |
+| General | Animations | System follows macOS Reduce Motion. On and Off override it for Knopo's editing, folding, and panel animations in every graph. Defaults to System. |
 | General | Body font weight | Medium; Light and Heavy are app-wide alternatives. |
 | General | Page-link brackets | Hidden. |
 | General | Journal date format | Abbreviated, long, numeric or ISO, each rendered by the OS in the user's locale - `Jun 10, 2026`, `10. Juni 2026`, `2026年6月10日`. App-wide, so every graph and window agrees. A custom Unicode pattern is the escape hatch, where `d{ordinal}` adds the locale's ordinal day. A legacy per-graph format is imported once. |

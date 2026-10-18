@@ -7,6 +7,52 @@ import KnopoCore
 @MainActor
 @Suite struct HoverPreviewTests {
 
+    @Test(arguments: [false, true])
+    func hoverPreviewsFollowAnimationPreference(chip: Bool) throws {
+        let name = "knopo-preview-motion-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let preferences = Preferences(defaults: defaults, syncsRenderer: false, reduceMotion: { true })
+        let cell = OutlineRowCell(frame: NSRect(x: 0, y: 0, width: 400, height: 40))
+        let window = NSWindow(contentRect: cell.frame, styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(cell)
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        let content: NSAttributedString
+        if chip {
+            let attachment = NSTextAttachment()
+            attachment.image = NSImage(size: NSSize(width: 40, height: 20))
+            content = NSAttributedString(attachment: attachment)
+        } else {
+            content = NSAttributedString(string: "Preview content")
+        }
+        cell.callbacks.pagePreview = { _ in content }
+        cell.callbacks.animationsEnabled = { preferences.animationsEnabled }
+        cell.showRendered(NSAttributedString(string: "Page link"))
+        cell.layoutSubtreeIfNeeded()
+        func findRenderedView(_ view: NSView) -> RenderedTextView? {
+            if let rendered = view as? RenderedTextView { return rendered }
+            for child in view.subviews {
+                if let rendered = findRenderedView(child) { return rendered }
+            }
+            return nil
+        }
+        let rendered = try #require(findRenderedView(cell))
+        defer { rendered.onHoverEnded() }
+        for mode in Preferences.Animations.allCases {
+            preferences.animations = mode
+            rendered.onHoverRef(.page("Preview"), .zero)
+            let popover = try #require(cell.previewPopover)
+            #expect(popover.isShown)
+            #expect(popover.animates == (mode == .on))
+            preferences.animations = .off
+            rendered.onHoverEnded()
+            #expect(!popover.animates)
+            #expect(cell.previewPopover == nil)
+        }
+    }
+
     private func controller(_ store: GraphStore) -> (OutlineEditorController, AppState) {
         let app = AppState(store: store)
         return (OutlineEditorController(app: app, nav: Navigator(app: app)), app)

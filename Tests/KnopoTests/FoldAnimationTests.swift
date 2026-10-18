@@ -6,9 +6,7 @@ import KnopoCore
 
 @MainActor
 @Suite struct FoldAnimationTests {
-    @Test(.enabled("Requires Reduce Motion to be off") {
-        await MainActor.run { !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    }, arguments: [false, true], [false, true])
+    @Test(arguments: [false, true], [false, true])
     func bothDirectionsAnimateAtTheEndAndBetweenRows(shared: Bool, atEnd: Bool) async throws {
         try await withOutline(shared: shared, childCount: 3, atEnd: atEnd, visible: true) {
             _, _, table, window in
@@ -17,13 +15,23 @@ import KnopoCore
         }
     }
 
-    @Test(.enabled("Requires Reduce Motion to be off") {
-        await MainActor.run { !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    })
-    func nestedSingleChildAnimatesInBothDirections() async throws {
+    @Test func nestedSingleChildAnimatesInBothDirections() async throws {
         try await withOutline(childCount: 1, visible: true) { _, _, table, window in
             try await checkMotion(row: 2, table: table, window: window)
             try await checkMotion(row: 2, table: table, window: window)
+        }
+    }
+
+    @Test(arguments: [Preferences.Animations.off, .system])
+    func disabledFoldsSettleImmediately(mode: Preferences.Animations) async throws {
+        try await withOutline(childCount: 3, visible: true, animations: mode) { _, _, table, window in
+            let container = try #require(table.superview as? OutlineContainerView)
+            for _ in 0..<2 {
+                try fold(row: 1, in: table)
+                window.layoutIfNeeded()
+                #expect(!container.isAnimatingFold)
+                #expect(abs(container.frame.height - table.intrinsicContentSize.height) < 1)
+            }
         }
     }
 
@@ -204,6 +212,7 @@ import KnopoCore
 
     private func withOutline(
         shared: Bool = false, childCount: Int = 40, atEnd: Bool = false, visible: Bool = false,
+        animations: Preferences.Animations = .on,
         _ body: (AppState, OutlineEditorController, OutlineTableView, NSWindow) async throws -> Void
     ) async throws {
         let root = FileManager.default.temporaryDirectory
@@ -219,7 +228,11 @@ import KnopoCore
                        Block(content: "After")]
         if atEnd { page.blocks.removeLast() }
         store.updatePage(page)
-        let app = AppState(store: store)
+        let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
+        defer { defaults.removePersistentDomain(forName: root.lastPathComponent) }
+        let preferences = Preferences(defaults: defaults, syncsRenderer: false, reduceMotion: { true })
+        preferences.animations = animations
+        let app = AppState(store: store, preferences: preferences)
         defer { app.shutdown() }
         let nav = Navigator(app: app)
         let host = NSHostingView(rootView: ScrollView {

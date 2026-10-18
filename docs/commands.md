@@ -146,8 +146,8 @@ in the main view.
 | `⌃⌘-` | Decrease line spacing. |
 | `⌃⌘0` | Reset line spacing. |
 
-Body font weight and page-link brackets live in General settings. Rebuilding
-the index lives in Graph Settings.
+Animations, body font weight and page-link brackets live in General settings.
+Rebuilding the index lives in Graph Settings.
 
 ## Pointer and context-menu actions
 

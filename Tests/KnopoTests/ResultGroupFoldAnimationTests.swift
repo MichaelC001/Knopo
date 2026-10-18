@@ -6,9 +6,9 @@ import KnopoCore
 
 @MainActor
 @Suite struct ResultGroupFoldAnimationTests {
-    @Test func tagPageGroupsSlideAndCanReverseMidFold() async throws {
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        try await withTagPage { window, host in
+    @Test(arguments: Preferences.Animations.allCases)
+    func tagPageGroupsSlideAndCanReverseMidFold(mode: Preferences.Animations) async throws {
+        try await withTagPage(animations: mode) { window, host in
             let following = try #require(textViews(host).first { $0.string.hasPrefix("Beta block 0") })
             let expandedY = following.convert(.zero, to: host).y
             for collapsed in [true, false] {
@@ -25,7 +25,7 @@ import KnopoCore
                 let intermediate = positions.filter {
                     $0 > min(startY, endY) + 1 && $0 < max(startY, endY) - 1
                 }
-                #expect(intermediate.isEmpty == reduceMotion)
+                #expect(intermediate.isEmpty == (mode != .on))
                 // SwiftUI may retain cached text views inside a zero-size container.
                 #expect(textViews(host).filter {
                     $0.string.hasPrefix("Alpha") && !$0.visibleRect.isEmpty
@@ -62,7 +62,7 @@ import KnopoCore
     }
 
     private func withTagPage(
-        firstGroupCount: Int = 3,
+        firstGroupCount: Int = 3, animations: Preferences.Animations = .on,
         _ body: (NSWindow, NSView) async throws -> Void
     ) async throws {
         let root = FileManager.default.temporaryDirectory
@@ -76,7 +76,11 @@ import KnopoCore
             store.updatePage(page)
             try store.savePage(named: name)
         }
-        let app = AppState(store: store)
+        let defaults = try #require(UserDefaults(suiteName: root.lastPathComponent))
+        defer { defaults.removePersistentDomain(forName: root.lastPathComponent) }
+        let preferences = Preferences(defaults: defaults, syncsRenderer: false, reduceMotion: { true })
+        preferences.animations = animations
+        let app = AppState(store: store, preferences: preferences)
         defer { app.shutdown() }
         let nav = Navigator(app: app)
         let host = NSHostingView(rootView: TagViewScreen(tag: "idea", inPane: true)

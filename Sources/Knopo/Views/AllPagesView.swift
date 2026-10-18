@@ -150,7 +150,7 @@ struct AllPagesView: View {
         let collapsed = filter.isEmpty
             && app.allPagesCollapsedSections.contains(id.encoded)
         return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(app.preferences.animationsEnabled ? .easeInOut(duration: 0.15) : nil) {
                 app.toggleAllPagesSection(id.encoded)
             }
         } label: {

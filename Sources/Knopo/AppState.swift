@@ -93,6 +93,11 @@ final class AppState: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in self?.dataVersion += 1 }
             .store(in: &preferenceObservers)
+        // Animation changes refresh the UI without invalidating document renders.
+        preferences.$animationsEnabled
+            .dropFirst()
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &preferenceObservers)
         store.onExternalChange = { [weak self] _ in
             self?.dataVersion += 1
         }

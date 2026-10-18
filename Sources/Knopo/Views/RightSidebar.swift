@@ -7,7 +7,6 @@ import KnopoCore
 struct RightSidebar: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var nav: Navigator
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let cardCorner: CGFloat = 10
     private static let cardInset: CGFloat = 10
@@ -108,7 +107,7 @@ struct RightSidebar: View {
             // The disclosure + title is one big hit target (click anywhere on
             // the title row toggles), with separate menu / close buttons.
             Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                withAnimation(app.preferences.animationsEnabled ? .easeOut(duration: 0.16) : nil) {
                     nav.toggleRightPaneCollapsed(at: i)
                 }
             } label: {

@@ -7,7 +7,6 @@ import KnopoCore
 struct BlockResultList: View {
     @EnvironmentObject var app: AppState
     @EnvironmentObject var nav: Navigator
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let groups: [(key: String, value: [BacklinkHit])]
     /// Reference rows edit in place. Tag view rows are read-only.
     let editable: Bool
@@ -50,7 +49,7 @@ struct BlockResultList: View {
     private func groupHeader(_ sourcePage: String) -> some View {
         HStack(spacing: 4 * BlockRenderer.zoom) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                withAnimation(app.preferences.animationsEnabled ? .easeOut(duration: 0.16) : nil) {
                     if collapsedGroups.contains(sourcePage) { collapsedGroups.remove(sourcePage) }
                     else { collapsedGroups.insert(sourcePage) }
                 }

@@ -614,6 +614,9 @@ final class OutlineEditorController: NSObject {
         self.editor = BlockEditorTextView.create()
         self.renderedWithDateFormat = app.journalDateFormat
         super.init()
+        tableView.blockEditAnimation = BlockEditAnimation(reducesMotion: { [preferences = app.preferences] in
+            !preferences.animationsEnabled
+        })
         editor.actions = self
         editor.autocomplete = autocomplete
         setUpTable()
@@ -1112,7 +1115,7 @@ final class OutlineEditorController: NSObject {
         // Cells are reused, so a flash still running on another row goes out first —
         // including one this reveal itself left on a cell that has since moved on.
         if flashedCell !== cell { flashedCell?.cancelFlash() }
-        cell.flash()
+        cell.flash(animationsEnabled: { [preferences = app.preferences] in preferences.animationsEnabled })
         flashedCell = cell
         flashedBlockID = request.blockID
     }
@@ -1718,7 +1721,7 @@ final class OutlineEditorController: NSObject {
         let old = rows
         let previousFocus = focusedBlockID
         rebuildRows(reusingStaticRendersFrom: reuseStaticRenders ? old : nil)
-        if folding || indenting { remapSelection(from: old) }
+        remapSelection(from: old)
         // Move the focus marker BEFORE applying row updates: unlike the old
         // full `reloadData()` (lazy — cells materialized after `attachEditor`
         // updated the marker), row-level reloads reconfigure synchronously, and
@@ -1795,7 +1798,7 @@ final class OutlineEditorController: NSObject {
                 }
             }
             let animate = folding && tableView.window != nil
-                && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                && app.preferences.animationsEnabled
             tableView.performRowUpdates(animated: animate) {
                 tableView.beginUpdates()
                 if !removed.isEmpty {
@@ -2080,10 +2083,17 @@ final class OutlineEditorController: NSObject {
             if let owner = Self.selectionOwner, owner !== self { owner.clearSelection() }
             Self.selectionOwner = self
         }
+        let changed = selectedRows.symmetricDifference(rows)
         selectedRows = rows
         selectionAnchor = anchor
         selectionActive = active ?? anchor   // the moving end for Shift+↑/↓
-        reloadAllRows()
+        // Selection changes only the fill. Reloading here leaves pending height
+        // queries that can read the new row indexes during a subsequent deletion.
+        for index in changed where index >= 0 && index < tableView.numberOfRows {
+            let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
+                as? OutlineRowCell
+            cell?.setBlockSelected(rows.contains(index))
+        }
     }
 
     private func clearSelection() {
@@ -2595,7 +2605,8 @@ final class OutlineEditorController: NSObject {
             },
             resizeImage: { [weak self] imageIndex, width in
                 self?.resizeImage(id, imageIndex: imageIndex, width: width)
-            }
+            },
+            animationsEnabled: { [preferences = app.preferences] in preferences.animationsEnabled }
         )
     }
 
