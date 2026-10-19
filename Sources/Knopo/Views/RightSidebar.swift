@@ -14,22 +14,30 @@ struct RightSidebar: View {
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
     var body: some View {
-        paneList
-            // Recessed column so the lighter cards read as elevated documents.
-            // Crucially, DON'T let the grey bleed up into the top safe area
-            // (under the window toolbar) — otherwise the recessed grey and the
-            // toolbar merge into one mass running to the window's top border.
-            // Respecting the top edge stops the grey at the toolbar's bottom; a
-            // separator there makes the boundary crisp.
-            .background(Self.columnColor, ignoresSafeAreaEdges: [.horizontal, .bottom])
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Color(nsColor: .separatorColor)
-                    .frame(height: 1)
-                    .frame(maxWidth: .infinity)
-            }
+        columnSurface
             .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
                 scrollerStyle = NSScroller.preferredScrollerStyle
             }
+    }
+
+    /// Recessed column so the lighter cards read as elevated documents.
+    @ViewBuilder
+    private var columnSurface: some View {
+        if Self.isMacOS26OrLater {
+            // Cards scroll under the toolbar, as in the main view.
+            paneList
+                .background(Self.columnColor, ignoresSafeAreaEdges: .all)
+        } else {
+            // On 15, grey under the toolbar merges with it.
+            // Stop at its bottom edge and add a separator.
+            paneList
+                .background(Self.columnColor, ignoresSafeAreaEdges: [.horizontal, .bottom])
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Color(nsColor: .separatorColor)
+                        .frame(height: 1)
+                        .frame(maxWidth: .infinity)
+                }
+        }
     }
 
     private var paneList: some View {

@@ -57,8 +57,7 @@ struct MainWindow: View {
                     }
                 }
             }
-            // The graph title has no glass backing. Keep it legible over either
-            // document column with the system's frosted scroll-edge effect.
+            // Frost keeps the glassless graph title legible.
             .toolbarScrollEdgeEffect()
         }
         .background(SidebarTransition.WindowAttachment(state: sidebarTransition,
