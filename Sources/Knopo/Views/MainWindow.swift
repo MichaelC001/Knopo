@@ -57,6 +57,9 @@ struct MainWindow: View {
                     }
                 }
             }
+            // The graph title has no glass backing. Keep it legible over either
+            // document column with the system's frosted scroll-edge effect.
+            .toolbarScrollEdgeEffect()
         }
         .background(SidebarTransition.WindowAttachment(state: sidebarTransition,
                                                        preferences: app.preferences))
@@ -159,6 +162,17 @@ struct MainWindow: View {
             TagViewScreen(tag: tag)
         case .allPages:
             AllPagesView()
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func toolbarScrollEdgeEffect() -> some View {
+        if #available(macOS 26.0, *) {
+            scrollEdgeEffectStyle(.hard, for: .top)
+        } else {
+            self
         }
     }
 }
