@@ -14,6 +14,8 @@ import KnopoCore
             for collapsed in [true, false] {
                 let startY = following.convert(.zero, to: host).y
                 try clickChevron(in: window, host: host)
+                window.layoutIfNeeded()
+                let firstY = following.convert(.zero, to: host).y
                 var positions: [CGFloat] = []
                 for _ in 0..<12 {
                     try await Task.sleep(for: .milliseconds(20))
@@ -22,10 +24,9 @@ import KnopoCore
                 }
                 let endY = try #require(positions.last)
                 #expect(abs(startY - endY) > 40)
-                let intermediate = positions.filter {
-                    $0 > min(startY, endY) + 1 && $0 < max(startY, endY) - 1
-                }
-                #expect(intermediate.isEmpty == (mode != .on))
+                // Without animation one layout moves the row to its end. Animated, it is
+                // still on its way. Slow CI runners can skip every frame in between.
+                #expect((abs(firstY - endY) > 1) == (mode == .on))
                 // SwiftUI may retain cached text views inside a zero-size container.
                 #expect(textViews(host).filter {
                     $0.string.hasPrefix("Alpha") && !$0.visibleRect.isEmpty

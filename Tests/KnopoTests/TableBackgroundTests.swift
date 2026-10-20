@@ -4,6 +4,34 @@ import Testing
 
 @MainActor
 @Suite struct TableBackgroundTests {
+    @Test func headerFillCoversTheBottomPadding() throws {
+        let source = "| Label | |\n| --- | --- |\n| value | other |"
+        let rendered = BlockRenderer.render(content: source, context: .init(contentWidth: 420))
+        let view = RenderedTextView.create()
+        view.frame = NSRect(x: 0, y: 0, width: 420, height: 120)
+        view.textContainerInset = NSSize(width: 0, height: 10)
+        view.textStorage?.setAttributedString(rendered)
+        let layout = try #require(view.textLayoutManager)
+        layout.ensureLayout(for: layout.documentRange)
+        let fragment = try #require(layout.textLayoutFragment(for: layout.documentRange.location))
+        let header = try #require(fragment.textLineFragments.first).typographicBounds.offsetBy(
+            dx: fragment.layoutFragmentFrame.minX + view.textContainerOrigin.x,
+            dy: fragment.layoutFragmentFrame.minY + view.textContainerOrigin.y)
+        let geometry = try #require(rendered.attribute(
+            BlockRenderer.tableKey, at: 0, effectiveRange: nil) as? BlockRenderer.TableGeometry)
+        let x = (geometry.columnEdges[1] + geometry.columnEdges[2]) / 2 + view.textContainerOrigin.x
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let scale = CGFloat(bitmap.pixelsWide) / view.bounds.width
+        func alpha(at y: CGFloat) throws -> CGFloat {
+            try #require(bitmap.colorAt(x: Int(x * scale), y: Int(y * scale))).alphaComponent
+        }
+        let headerAlpha = try alpha(at: header.midY)
+        let paddingAlpha = try alpha(at: header.maxY + BlockRenderer.tableRowPad / 2)
+        #expect(headerAlpha > 0.02)
+        #expect(abs(paddingAlpha - headerAlpha) < 0.01)
+    }
+
     @Test(arguments: [CGFloat(420), 800], [CGFloat(0.6), 1, 2.6])
     func colorFillContainsEveryGridCorner(rowWidth: CGFloat, zoom: CGFloat) throws {
         let oldZoom = BlockRenderer.zoom, oldDensity = BlockRenderer.density

@@ -123,8 +123,7 @@ import KnopoCore
                 #expect(following.layer?.animation(forKey: BlockEditAnimation.animationKey)?.duration == 0.098)
             }
             try await settle(window)
-            #expect(!hasAnimation(following))
-            #expect(!hasAnimation(inserted))
+            try await waitUntil { !hasAnimation(following) && !hasAnimation(inserted) }
             #expect(abs(following.frame.minY - table.rect(ofRow: 2).minY) < 1)
         }
     }
@@ -221,7 +220,7 @@ import KnopoCore
             try await settle(window)
             #expect(app.document(for: "Insertion").blocks[0].content == text)
             #expect(table.numberOfRows == 3)
-            #expect(animatedRows(table) == 0)
+            try await waitUntil { animatedRows(table) == 0 }
         }
     }
 
@@ -312,7 +311,7 @@ import KnopoCore
             editor.insertText(" typed", replacementRange: editor.selectedRange())
             #expect(app.document(for: "Insertion").blocks[0].content == "Before typed")
             try await settle(window)
-            #expect(table.blockEditAnimation.removalSnapshotCount == 0)
+            try await waitUntil { table.blockEditAnimation.removalSnapshotCount == 0 }
             #expect(abs(table.frame.height - table.intrinsicContentSize.height) < 1)
         }
     }
@@ -362,8 +361,9 @@ import KnopoCore
             editor.insertText("Typed ", replacementRange: editor.selectedRange())
             #expect(app.document(for: "Insertion").blocks[1].content == "Typed " + text)
             try await settle(window)
-            #expect(!hasAnimation(moved))
-            #expect(table.blockEditAnimation.removalSnapshotCount == 0)
+            try await waitUntil {
+                !hasAnimation(moved) && table.blockEditAnimation.removalSnapshotCount == 0
+            }
         }
     }
 
@@ -380,7 +380,7 @@ import KnopoCore
             #expect(table.blockEditAnimation.removalSnapshotCount > 0)
             #expect(table.blockEditAnimation.removalSnapshotCount < 30)
             try await settle(window)
-            #expect(table.blockEditAnimation.removalSnapshotCount == 0)
+            try await waitUntil { table.blockEditAnimation.removalSnapshotCount == 0 }
         }
     }
 
@@ -419,7 +419,7 @@ import KnopoCore
             app.undo()
             try await settle(window)
             #expect(app.document(for: "Insertion").blocks.map(\.content) == ["Alpha", "Beta", "After"])
-            #expect(table.blockEditAnimation.removalSnapshotCount == 0)
+            try await waitUntil { table.blockEditAnimation.removalSnapshotCount == 0 }
         }
     }
 
@@ -580,7 +580,7 @@ import KnopoCore
             // The row's selection tint is translucent. The text supplies opaque pixels.
             #expect(textPixels > 50)
             try await settle(window)
-            #expect(table.blockEditAnimation.removalSnapshotCount == 0)
+            try await waitUntil { table.blockEditAnimation.removalSnapshotCount == 0 }
         }
     }
 

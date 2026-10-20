@@ -8,8 +8,10 @@ build/
 
 # Local tooling 
 .claude/
+.opencode/
 CLAUDE.md
 AGENTS.md
+scripts/*review*.sh
 
 # Temp docs
 workdocs/

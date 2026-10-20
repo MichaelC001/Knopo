@@ -786,7 +786,7 @@ final class RenderedTextView: NSTextView {
 
         BlockRenderer.tableHeaderFill.setFill()
         NSRect(x: left, y: top, width: right - left,
-               height: first.maxY + origin.y - top).fill()
+               height: first.maxY + origin.y + BlockRenderer.tableRowPad - top).fill()
 
         NSColor.separatorColor.setFill()
         var horizontals = [top]

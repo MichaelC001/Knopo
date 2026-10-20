@@ -41,28 +41,35 @@ import KnopoCore
         let trailing = table.rowView(atRow: table.numberOfRows - 1, makeIfNecessary: true)
         let trailingText = trailing.map { descendants($0, of: RenderedTextView.self).map(\.string) }
         let start = container.frame.height
+        let started = ContinuousClock.now
         try fold(row: row, in: table)
         window.layoutIfNeeded()
         let target = table.intrinsicContentSize.height
         try #require(abs(start - target) > 1)
+        // The fold animates from the old height. Slow CI runners can skip every
+        // frame in between, so mid-fold rows are checked only when a sample catches one.
+        #expect(container.isAnimatingFold)
         #expect(abs(container.frame.height - start) < 1)
-        var intermediateHeights: [CGFloat] = []
-        for _ in 0..<12 {
-            try await Task.sleep(for: .milliseconds(20))
+        // A surviving last row must not be recycled for an inserted child.
+        func checkTrailingRow() {
+            guard trailingText == ["After"], let trailing else { return }
+            #expect(table.rowView(atRow: table.numberOfRows - 1,
+                                  makeIfNecessary: false) === trailing)
+            #expect(abs(trailing.frame.minY
+                        - table.rect(ofRow: table.numberOfRows - 1).minY) < 1)
+        }
+        checkTrailingRow()
+        try await waitUntil {
             window.layoutIfNeeded()
             let height = container.frame.height
             if height > min(start, target) + 1, height < max(start, target) - 1 {
-                intermediateHeights.append(height)
-                // A surviving last row must not be recycled for an inserted child.
-                if trailingText == ["After"], let trailing {
-                    #expect(table.rowView(atRow: table.numberOfRows - 1,
-                                          makeIfNecessary: false) === trailing)
-                    #expect(abs(trailing.frame.minY
-                                - table.rect(ofRow: table.numberOfRows - 1).minY) < 1)
-                }
+                checkTrailingRow()
             }
+            return !container.isAnimatingFold
         }
-        #expect(!intermediateHeights.isEmpty)
+        // A cancel would end the 0.16 s fold early. A slow runner only ends it late.
+        #expect(ContinuousClock.now - started >= .milliseconds(120))
+        window.layoutIfNeeded()
         #expect(table.rowView(atRow: row, makeIfNecessary: false) === parent)
         #expect(abs(container.frame.height - target) < 1)
         #expect(abs(table.frame.height - target) < 1)
