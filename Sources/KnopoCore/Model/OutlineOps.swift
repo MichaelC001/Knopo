@@ -398,17 +398,13 @@ public enum OutlineOps {
 
     /// Splits pasted multi-line Markdown into blocks: by list structure when
     /// bullet markers are present, else one block per non-empty line.
+    /// Leading text also becomes blocks, keeping code fences together.
     public static func blocksFromPasted(_ text: String) -> [Block] {
-        if text.contains("\n- ") || text.hasPrefix("- ") {
-            var parsed = PageParser.parse(text)
-            invalidateAll(&parsed.blocks)
-            return parsed.blocks
-        }
-        return text
-            .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .map { Block(content: $0) }
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var parsed = PageParser.parse(normalized, plainLinesAsBlocks: true)
+        invalidateAll(&parsed.blocks)
+        return parsed.blocks
     }
 
     private static func invalidateAll(_ blocks: inout [Block]) {

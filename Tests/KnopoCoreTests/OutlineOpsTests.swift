@@ -316,6 +316,89 @@ import Foundation
         expectEqual(pasted.map(\.content), ["alpha", "beta", "gamma"])
     }
 
+    @Test(arguments: ["\n", "\r\n", "\r"], ["", "  "])
+    func pasteKeepsLeadingTextBeforeNestedList(newline: String, indent: String) throws {
+        let text = "# Heading\n\nIntroduction\n\n1. First step\n2. Second step\n\n\(indent)- parent\n\(indent)  - child\n\(indent)- last\n"
+        let pasted = OutlineOps.blocksFromPasted(text.replacingOccurrences(of: "\n", with: newline))
+        expectEqual(pasted.map(\.content),
+                    ["# Heading", "Introduction", "1. First step", "2. Second step", "parent", "last"])
+        let parent = try #require(pasted.first { $0.content == "parent" })
+        expectEqual(parent.children.map(\.content), ["child"])
+        expectTrue(pasted.allSatisfy { $0.raw == nil })
+        expectTrue(parent.children.allSatisfy { $0.raw == nil })
+    }
+
+    @Test(arguments: ["```swift", "~~~swift"], ["", "- last\n"])
+    func pasteKeepsLeadingFencesTogether(opening: String, tail: String) throws {
+        let code = opening + "\n  let value = 1\n\n- literal bullet\nstatus:: literal\n" + opening.prefix(3)
+        let pasted = OutlineOps.blocksFromPasted("# Heading\n\n" + code + "\n\n" + tail)
+        let expected = ["# Heading", code] + (tail.isEmpty ? [] : ["last"])
+        expectEqual(pasted.map(\.content), expected)
+        let fence = try #require(pasted.first { $0.content == code })
+        expectTrue(fence.properties.isEmpty)
+        expectPasteSurvivesReload(pasted)
+    }
+
+    @Test(arguments: ["# Heading\n\n```swift\n  let value = 1", "- ```swift\n    let value = 1"])
+    func pasteClosesAnUnfinishedFence(text: String) {
+        let pasted = OutlineOps.blocksFromPasted(text)
+        expectEqual(pasted.last?.content, "```swift\n  let value = 1\n```")
+        expectPasteSurvivesReload(pasted)
+    }
+
+    @Test func pasteParsesLeadingProperties() {
+        let pasted = OutlineOps.blocksFromPasted("title:: Guide\nstatus:: draft\n\n- item\n")
+        expectEqual(pasted.map(\.content), ["", "item"])
+        expectEqual(pasted.first?.properties,
+                    [BlockProperty(key: "title", value: "Guide"), BlockProperty(key: "status", value: "draft")])
+        expectPasteSurvivesReload(pasted)
+    }
+
+    @Test func pasteKeepsTextBetweenAndAfterLists() {
+        let examples: [(String, [String])] = [
+            ("1. First\n   - child\n2. Second\n   - other", ["1. First", "child", "2. Second", "other"]),
+            ("Intro\n\n- item\n\nClosing paragraph", ["Intro", "item", "Closing paragraph"]),
+            ("# First\n- one\n# Second\n- two", ["# First", "one", "# Second", "two"]),
+            ("- item\n\n```sh\n  echo hello\n```", ["item", "```sh\n  echo hello\n```"]),
+        ]
+        for (text, expected) in examples {
+            let pasted = OutlineOps.blocksFromPasted(text)
+            expectEqual(pasted.map(\.content), expected)
+            expectPasteSurvivesReload(pasted)
+        }
+    }
+
+    @Test func pasteKeepsIndentedContinuationsAndProperties() {
+        let pasted = OutlineOps.blocksFromPasted("Notes\n  owner:: Example\n- item\n  continuation\n  - child")
+        expectEqual(pasted.map(\.content), ["Notes", "item\ncontinuation"])
+        expectEqual(pasted.first?.properties, [BlockProperty(key: "owner", value: "Example")])
+        expectEqual(pasted.last?.children.map(\.content), ["child"])
+        expectPasteSurvivesReload(pasted)
+    }
+
+    @Test func pasteGivesBlocksFreshIDs() {
+        let id = UUID()
+        let pasted = OutlineOps.blocksFromPasted("id:: \(id)\n- item\n  id:: \(id)")
+        expectEqual(pasted.count, 2)
+        expectEqual(Set(pasted.map(\.id)).count, pasted.count)
+        expectTrue(pasted.allSatisfy { $0.id != id && !$0.idPersisted })
+    }
+
+    @Test func pasteRemovesTheOpeningFenceIndentation() {
+        let pasted = OutlineOps.blocksFromPasted("Intro\n\n   ```sh\n   echo hello\n   ```\n- item")
+        expectEqual(pasted.map(\.content), ["Intro", "```sh\necho hello\n```", "item"])
+        expectPasteSurvivesReload(pasted)
+    }
+
+    private func expectPasteSurvivesReload(_ pasted: [Block]) {
+        let existing = Block(content: "Existing block", idPersisted: true)
+        let blocks = pasted + [existing]
+        let reloaded = PageParser.parse(PageSerializer.serialize(ParsedPage(blocks: blocks))).blocks
+        expectEqual(reloaded.map(\.content), blocks.map(\.content))
+        expectEqual(reloaded.map(\.properties), blocks.map(\.properties))
+        expectEqual(reloaded.last?.id, existing.id)
+    }
+
     @Test func insertAfterLeafIsSibling() {
         var blocks = forest("- a\n- b\n")
         let id = OutlineOps.insertBlockAfter([0], in: &blocks, content: "x")

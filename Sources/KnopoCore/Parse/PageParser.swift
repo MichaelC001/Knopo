@@ -19,6 +19,10 @@ public struct ParsedPage: Sendable {
 public enum PageParser {
 
     public static func parse(_ text: String) -> ParsedPage {
+        parse(text, plainLinesAsBlocks: false)
+    }
+
+    static func parse(_ text: String, plainLinesAsBlocks: Bool) -> ParsedPage {
         let lines = splitKeepingTerminators(text)
         var preamble = ""
         var roots: [Block] = []
@@ -28,15 +32,29 @@ public enum PageParser {
         var pathStack: [Int] = []
         var current: PendingBlock? = nil
         var inFence = false
+        var hasList = false
 
         func finishCurrent() {
             guard let pending = current else { return }
-            insert(pending.build(), at: pending.parentPath, into: &roots)
+            insert(pending.build(preserveID: !plainLinesAsBlocks), at: pending.parentPath, into: &roots)
             current = nil
         }
 
         for line in lines {
-            let bullet = inFence ? nil : matchBullet(line)
+            let leadingIndent = line.prefix { $0 == " " || $0 == "\t" }.count
+            var bullet = inFence ? nil : matchBullet(line)
+            if bullet != nil, !hasList {
+                hasList = true
+                stack.removeAll()
+                pathStack.removeAll()
+            } else if plainLinesAsBlocks, !inFence, bullet == nil {
+                let content = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !content.isEmpty, !hasList || leadingIndent < (current?.indent ?? 0) + 2,
+                   current == nil || matchProperty(content) == nil {
+                    bullet = BulletMatch(indent: 0, text: content)
+                    hasList = false
+                }
+            }
             if let bullet {
                 finishCurrent()
                 while let top = stack.last, bullet.indent < top.indent {
@@ -61,7 +79,8 @@ public enum PageParser {
                 pathStack.append(position)
 
                 var pending = PendingBlock(
-                    indent: bullet.indent, depth: depth, parentPath: parentPath
+                    indent: bullet.indent, depth: depth, parentPath: parentPath,
+                    contentColumn: hasList ? bullet.indent + 2 : leadingIndent
                 )
                 pending.appendRaw(line)
                 pending.acceptFirstLine(bullet.text)
@@ -69,7 +88,8 @@ public enum PageParser {
                 current = pending
             } else if var pending = current {
                 pending.appendRaw(line)
-                let stripped = stripContinuationIndent(line, contentColumn: pending.indent + 2)
+                let stripped = stripContinuationIndent(line, contentColumn: pending.contentColumn)
+                let propertySource = plainLinesAsBlocks ? stripped.trimmingCharacters(in: .whitespaces) : stripped
                 if inFence {
                     pending.appendContentLine(stripped)
                     if fenceToggles(stripped) { inFence = false }
@@ -78,7 +98,7 @@ public enum PageParser {
                     inFence = true
                 } else if stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     // Blank line: kept in raw for round-trip, not part of content.
-                } else if let prop = matchProperty(stripped) {
+                } else if let prop = matchProperty(propertySource) {
                     pending.acceptProperty(prop)
                 } else {
                     pending.appendContentLine(stripped)
@@ -87,6 +107,11 @@ public enum PageParser {
             } else {
                 preamble += line
             }
+        }
+        // Close pasted fences so they cannot absorb existing blocks on reload.
+        if plainLinesAsBlocks, inFence,
+           let opening = current?.contentLines.first(where: fenceToggles) {
+            current?.appendContentLine(String(opening.trimmingCharacters(in: .whitespaces).prefix(3)))
         }
         finishCurrent()
         return ParsedPage(preamble: preamble, blocks: roots)
@@ -98,6 +123,7 @@ public enum PageParser {
         var indent: Int
         var depth: Int
         var parentPath: [Int]
+        var contentColumn: Int
         var rawText = ""
         var contentLines: [String] = []
         var id: UUID? = nil
@@ -138,13 +164,13 @@ public enum PageParser {
             }
         }
 
-        func build() -> Block {
+        func build(preserveID: Bool) -> Block {
             Block(
-                id: id ?? UUID(),
+                id: preserveID ? (id ?? UUID()) : UUID(),
                 content: contentLines.joined(separator: "\n"),
                 children: [],
                 collapsed: collapsed,
-                idPersisted: idPersisted,
+                idPersisted: preserveID && idPersisted,
                 properties: properties,
                 raw: RawSource(text: rawText, depth: depth)
             )
