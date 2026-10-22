@@ -29,7 +29,7 @@ import KnopoCore
             for _ in 0..<2 {
                 try fold(row: 1, in: table)
                 window.layoutIfNeeded()
-                #expect(!container.isAnimatingFold)
+                #expect(!container.isAnimatingHeight)
                 #expect(abs(container.frame.height - table.intrinsicContentSize.height) < 1)
             }
         }
@@ -48,7 +48,7 @@ import KnopoCore
         try #require(abs(start - target) > 1)
         // The fold animates from the old height. Slow CI runners can skip every
         // frame in between, so mid-fold rows are checked only when a sample catches one.
-        #expect(container.isAnimatingFold)
+        #expect(container.isAnimatingHeight)
         #expect(abs(container.frame.height - start) < 1)
         // A surviving last row must not be recycled for an inserted child.
         func checkTrailingRow() {
@@ -65,7 +65,7 @@ import KnopoCore
             if height > min(start, target) + 1, height < max(start, target) - 1 {
                 checkTrailingRow()
             }
-            return !container.isAnimatingFold
+            return !container.isAnimatingHeight
         }
         // A cancel would end the 0.16 s fold early. A slow runner only ends it late.
         #expect(ContinuousClock.now - started >= .milliseconds(120))

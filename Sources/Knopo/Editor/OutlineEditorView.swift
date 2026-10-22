@@ -116,12 +116,12 @@ private struct OutlineEditorRepresentable: NSViewRepresentable {
 
 // MARK: - Self-sizing table view
 
-/// Animates the outline's height without changing AppKit's row layout mid-fold.
+/// Animates the outline's height while AppKit rows keep their final geometry.
 final class OutlineContainerView: NSView {
     let tableView: OutlineTableView
-    private var foldAnimationID: UUID?
-    var isAnimatingFold: Bool { foldAnimationID != nil }
-    @objc private dynamic var foldHeight: CGFloat = 0 {
+    private var heightAnimationID: UUID?
+    var isAnimatingHeight: Bool { heightAnimationID != nil }
+    @objc private dynamic var animatedHeight: CGFloat = 0 {
         didSet { invalidateIntrinsicContentSize() }
     }
 
@@ -137,7 +137,7 @@ final class OutlineContainerView: NSView {
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric,
-               height: foldAnimationID == nil ? tableView.intrinsicContentSize.height : foldHeight)
+               height: heightAnimationID == nil ? tableView.intrinsicContentSize.height : animatedHeight)
     }
 
     override func layout() {
@@ -147,47 +147,58 @@ final class OutlineContainerView: NSView {
     }
 
     override class func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
-        if key == #keyPath(foldHeight) { return CABasicAnimation() }
+        if key == #keyPath(animatedHeight) { return CABasicAnimation() }
         return super.defaultAnimation(forKey: key)
     }
 
     func performRowUpdates(animated: Bool, _ updates: () -> Void) {
-        let startHeight = intrinsicContentSize.height
-        cancelFoldAnimation()
+        performHeightUpdates(from: intrinsicContentSize.height, animated: animated,
+                             duration: 0.16, updates)
+    }
+
+    func animateEditHeight(from height: CGFloat, duration: CFTimeInterval) {
+        guard abs(height - tableView.intrinsicContentSize.height) > 0.5 else { return }
+        performHeightUpdates(from: height, animated: true, duration: duration) {}
+    }
+
+    private func performHeightUpdates(from startHeight: CGFloat, animated: Bool,
+                                      duration: CFTimeInterval,
+                                      _ updates: () -> Void) {
+        cancelHeightAnimation()
         let animationID = UUID()
         if animated {
-            foldHeight = startHeight
-            foldAnimationID = animationID
+            animatedHeight = startHeight
+            heightAnimationID = animationID
         }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = animated ? 0.16 : 0
+            context.duration = animated ? duration : 0
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             updates()
-            if animated { animator().foldHeight = tableView.intrinsicContentSize.height }
+            if animated { animator().animatedHeight = tableView.intrinsicContentSize.height }
         }, completionHandler: { [weak self] in
-            guard let self, self.foldAnimationID == animationID else { return }
-            self.foldAnimationID = nil
+            guard let self, self.heightAnimationID == animationID else { return }
+            self.heightAnimationID = nil
             self.invalidateIntrinsicContentSize()
         })
     }
 
-    func cancelFoldAnimation() {
-        guard foldAnimationID != nil else { return }
-        foldAnimationID = nil
+    func cancelHeightAnimation() {
+        guard heightAnimationID != nil else { return }
+        heightAnimationID = nil
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
-            animator().foldHeight = foldHeight
+            animator().animatedHeight = animatedHeight
         }
         invalidateIntrinsicContentSize()
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { cancelFoldAnimation() }
+        if window == nil { cancelHeightAnimation() }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
-        if abs(newSize.width - frame.width) > 0.5 { cancelFoldAnimation() }
+        if abs(newSize.width - frame.width) > 0.5 { cancelHeightAnimation() }
         super.setFrameSize(newSize)
     }
 }
@@ -232,8 +243,8 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
         }
     }
 
-    func cancelFoldAnimation() {
-        (superview as? OutlineContainerView)?.cancelFoldAnimation()
+    func cancelHeightAnimation() {
+        (superview as? OutlineContainerView)?.cancelHeightAnimation()
     }
 
     override func invalidateIntrinsicContentSize() {
@@ -260,7 +271,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
 
     override func reloadData() {
         blockEditAnimation.cancel()
-        cancelFoldAnimation()
+        cancelHeightAnimation()
         tracedMutation("reloadData") { super.reloadData() }
     }
 
@@ -287,7 +298,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
 
     override func noteHeightOfRows(withIndexesChanged indexSet: IndexSet) {
         blockEditAnimation.cancel()
-        cancelFoldAnimation()
+        cancelHeightAnimation()
         tracedMutation("noteHeightOfRows") {
             super.noteHeightOfRows(withIndexesChanged: indexSet)
         }
@@ -335,7 +346,7 @@ final class OutlineTableView: NSTableView, NSMenuItemValidation {
     }
 
     override var visibleRect: NSRect {
-        guard (superview as? OutlineContainerView)?.isAnimatingFold == true,
+        guard (superview as? OutlineContainerView)?.isAnimatingHeight == true,
               let clip = enclosingScrollView?.contentView else { return super.visibleRect }
         // Keep moving rows alive beyond the container's temporary clip.
         // The surrounding scroll view still limits how many rows are prepared.
@@ -1787,7 +1798,7 @@ final class OutlineEditorController: NSObject {
         folding: Bool = false, indenting: Bool = false
     ) {
         tableView.blockEditAnimation.cancel()
-        if !folding { tableView.cancelFoldAnimation() }
+        if !folding { tableView.cancelHeightAnimation() }
         let old = rows
         let previousFocus = focusedBlockID
         rebuildRows(reusingStaticRendersFrom: reuseStaticRenders ? old : nil)

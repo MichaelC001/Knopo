@@ -1,6 +1,6 @@
 import AppKit
 
-/// Row geometry and focus change immediately. Only the displayed layers move.
+/// Rows and focus change immediately. Their layers and the outline height animate.
 @MainActor
 final class BlockEditAnimation {
     static let animationKey = "knopo.blockEdit"
@@ -11,11 +11,13 @@ final class BlockEditAnimation {
     private let reducesMotion: () -> Bool
     private var lastEditTime: CFTimeInterval = -.infinity
     private let animatedLayers = NSHashTable<CALayer>.weakObjects()
+    private weak var animatedContainer: OutlineContainerView?
     private var removalOverlay: RemovalOverlay?
     private var removalCleanup: DispatchWorkItem?
     var removalSnapshotCount: Int { removalOverlay?.images.count ?? 0 }
 
     struct Snapshot {
+        var height: CGFloat = 0
         var positions: [UUID: NSPoint] = [:]
         var removedImages: [(image: NSImage, frame: NSRect)] = []
         weak var host: NSView?
@@ -36,9 +38,10 @@ final class BlockEditAnimation {
         let idle = now - lastEditTime >= Self.quietInterval
         // Repeated edits settle the first slide and stay instant until a pause.
         guard idle, table.window != nil, !reducesMotion() else { return nil }
-        table.cancelFoldAnimation()
+        table.cancelHeightAnimation()
         table.layoutSubtreeIfNeeded()
         var snapshot = Snapshot()
+        snapshot.height = table.intrinsicContentSize.height
         // The clip view keeps a deleted last row visible while the outline shrinks.
         snapshot.host = table.enclosingScrollView?.contentView ?? table.window?.contentView
         let visible = table.visibleRect
@@ -63,6 +66,10 @@ final class BlockEditAnimation {
                  insertedID: UUID? = nil,
                  duration: CFTimeInterval = BlockEditAnimation.defaultDuration,
                  rowAt: (Int) -> (id: UUID, x: CGFloat)?) {
+        if let container = table.superview as? OutlineContainerView {
+            container.animateEditHeight(from: snapshot.height, duration: duration)
+            if container.isAnimatingHeight { animatedContainer = container }
+        }
         table.layoutSubtreeIfNeeded()
         let visible = table.visibleRect
         var movingRows: [(index: Int, view: NSTableRowView, id: UUID, x: CGFloat)] = []
@@ -151,6 +158,8 @@ final class BlockEditAnimation {
     }
 
     func cancel() {
+        animatedContainer?.cancelHeightAnimation()
+        animatedContainer = nil
         removalCleanup?.cancel()
         removalCleanup = nil
         removalOverlay?.removeFromSuperview()
