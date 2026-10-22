@@ -1,8 +1,65 @@
 import Testing
 import Foundation
+import GRDB
 @testable import KnopoCore
 
 @Suite struct GraphStoreTests {
+
+    @Test func oldIndexVersionsRebuildUnchangedCRLFFiles() throws {
+        let store = try makeGraph([
+            "Windows": "title\r\n- one #match\r\n  knopo.list-type:: ordered\r\n- two [[Target]]\r\n",
+            "Unix": "- untouched unix\n",
+        ])
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let unixID = try #require(try store.cache.searchBlocks("untouched").first?.blockID)
+        let url = store.fileURL(forPageNamed: "Windows")
+        try store.cache.indexPage(PageDocument(name: "Windows", blocks: [], fileExists: true),
+                                  stamp: GraphStore.stamp(of: url))
+        try store.cache.setIndexVersion(6)
+        let reopened = try GraphStore(root: store.root)
+        expectEqual(reopened.cache.indexVersion, CacheDB.indexVersion)
+        expectEqual(try reopened.cache.blocks(taggedWith: "match").count, 1)
+        expectEqual(try reopened.cache.backlinks(of: "target").count, 1)
+        expectEqual(try reopened.cache.numberingOutline(onPageNamed: "Windows").count, 2)
+        expectEqual(reopened.cache.indexStats.full, 1)
+        expectEqual(reopened.cache.indexStats.incremental, 0)
+        expectEqual(try reopened.cache.searchBlocks("untouched").first?.blockID, unixID)
+        let sameVersion = try GraphStore(root: store.root)
+        expectEqual(sameVersion.cache.indexStats.full, 0)
+        expectEqual(sameVersion.cache.indexStats.incremental, 0)
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func rebuildFreesPersistedIDsUnderObsoleteKeys(orphan: Bool, upgrade: Bool) throws {
+        let id = UUID()
+        let store = try makeGraph(["Current": "- target #match\n  id:: \(id)\n"])
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        // Simulate an older page-key policy, or a damaged cache with no owning page.
+        let db = try DatabaseQueue(path: store.dotDir.appendingPathComponent("cache.db").path)
+        try db.write { db in
+            for table in ["blocks", "blocks_fts", "page_refs", "block_refs", "tags", "props", "page_props"] {
+                try db.execute(sql: "UPDATE \(table) SET page_key = 'obsolete' WHERE page_key = 'current'")
+            }
+            try db.execute(sql: "UPDATE pages SET name_key = 'obsolete' WHERE name_key = 'current'")
+            if orphan { try db.execute(sql: "DELETE FROM pages") }
+        }
+        let rebuilt: GraphStore
+        if upgrade {
+            try store.cache.setIndexVersion(5)
+            rebuilt = try GraphStore(root: store.root)
+        } else {
+            try store.indexMaintenance.rebuild()
+            rebuilt = store
+        }
+        expectFalse(rebuilt.isLoaded("Current"))
+        expectEqual(try rebuilt.cache.locateBlock(id)?.pageKey, "current")
+        expectEqual(rebuilt.resolveBlock(id)?.block.content, "target #match")
+        expectEqual(try rebuilt.cache.blocks(taggedWith: "match").map(\.blockID), [id])
+        let leftovers = try db.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM blocks_fts WHERE page_key = 'obsolete'")
+        }
+        expectEqual(leftovers, 0)
+    }
 
     /// A conflict copy's filename must carry the Gregorian year whatever the
     /// region's calendar is - a Buddhist calendar would write 2569 (phase 2c).

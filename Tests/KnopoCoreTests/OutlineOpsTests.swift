@@ -321,7 +321,9 @@ import Foundation
         let text = "# Heading\n\nIntroduction\n\n1. First step\n2. Second step\n\n\(indent)- parent\n\(indent)  - child\n\(indent)- last\n"
         let pasted = OutlineOps.blocksFromPasted(text.replacingOccurrences(of: "\n", with: newline))
         expectEqual(pasted.map(\.content),
-                    ["# Heading", "Introduction", "1. First step", "2. Second step", "parent", "last"])
+                    ["# Heading", "Introduction", "First step", "Second step", "parent", "last"])
+        expectTrue(pasted[2].isNumbered)
+        expectTrue(pasted[3].isNumbered)
         let parent = try #require(pasted.first { $0.content == "parent" })
         expectEqual(parent.children.map(\.content), ["child"])
         expectTrue(pasted.allSatisfy { $0.raw == nil })
@@ -356,7 +358,7 @@ import Foundation
 
     @Test func pasteKeepsTextBetweenAndAfterLists() {
         let examples: [(String, [String])] = [
-            ("1. First\n   - child\n2. Second\n   - other", ["1. First", "child", "2. Second", "other"]),
+            ("1. First\n   - child\n2. Second\n   - other", ["First", "Second"]),
             ("Intro\n\n- item\n\nClosing paragraph", ["Intro", "item", "Closing paragraph"]),
             ("# First\n- one\n# Second\n- two", ["# First", "one", "# Second", "two"]),
             ("- item\n\n```sh\n  echo hello\n```", ["item", "```sh\n  echo hello\n```"]),

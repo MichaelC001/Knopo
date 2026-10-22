@@ -30,7 +30,7 @@ final class BlockEditAnimation {
     }
 
     func prepare(in table: OutlineTableView, removingIDs: Set<UUID> = [],
-                 rowAt: (Int) -> (id: UUID, depth: Int)?) -> Snapshot? {
+                 rowAt: (Int) -> (id: UUID, x: CGFloat)?) -> Snapshot? {
         cancel()
         let now = currentTime()
         let idle = now - lastEditTime >= Self.quietInterval
@@ -45,7 +45,7 @@ final class BlockEditAnimation {
         table.enumerateAvailableRowViews { view, index in
             guard let row = rowAt(index), view.frame.intersects(visible) else { return }
             snapshot.positions[row.id] = NSPoint(
-                x: CGFloat(row.depth) * OutlineRowCell.indentPerDepth, y: view.frame.minY)
+                x: row.x, y: view.frame.minY)
             guard removingIDs.contains(row.id), let host = snapshot.host else { return }
             let rect = view.convert(visible.intersection(view.frame), from: table)
             guard !rect.isEmpty, let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else {
@@ -62,14 +62,15 @@ final class BlockEditAnimation {
     func animate(in table: OutlineTableView, from snapshot: Snapshot,
                  insertedID: UUID? = nil,
                  duration: CFTimeInterval = BlockEditAnimation.defaultDuration,
-                 rowAt: (Int) -> (id: UUID, depth: Int)?) {
+                 rowAt: (Int) -> (id: UUID, x: CGFloat)?) {
         table.layoutSubtreeIfNeeded()
         let visible = table.visibleRect
-        var movingRows: [(index: Int, view: NSTableRowView, id: UUID, depth: Int)] = []
+        var movingRows: [(index: Int, view: NSTableRowView, id: UUID, x: CGFloat)] = []
         table.enumerateAvailableRowViews { view, index in
             guard let row = rowAt(index),
                   snapshot.positions[row.id] != nil || view.frame.intersects(visible) else { return }
-            movingRows.append((index, view, row.id, row.depth))
+            movingRows.append((index, view, row.id,
+                               row.x))
         }
         movingRows.sort { $0.index < $1.index }
         // Newly revealed rows follow their nearest surviving neighbor vertically.
@@ -81,7 +82,7 @@ final class BlockEditAnimation {
             let view = row.view
             let inserted = row.id == insertedID
             let old = snapshot.positions[row.id]
-            let dx = old.map { $0.x - CGFloat(row.depth) * OutlineRowCell.indentPerDepth } ?? 0
+            let dx = old.map { $0.x - row.x } ?? 0
             if let old { previousDY = old.y - view.frame.minY }
             let dy = inserted ? -min(12, view.frame.height / 2)
                 : previousDY

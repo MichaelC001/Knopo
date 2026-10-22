@@ -22,7 +22,7 @@ public enum PageSerializer {
         for block in blocks {
             // If a previous raw slice lacked a trailing newline (file ended
             // without one) but more content follows, repair the separator.
-            if !out.isEmpty, !out.hasSuffix("\n") { out += "\n" }
+            if !out.isEmpty, out.last?.isNewline != true { out += "\n" }
             if let raw = block.raw, raw.depth == depth {
                 out += raw.text
             } else {

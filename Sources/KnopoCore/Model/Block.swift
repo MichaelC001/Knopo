@@ -95,7 +95,31 @@ public struct Block: Identifiable, Sendable {
     /// shown as editable `key:: value` text — set via UI (e.g. the bullet menu),
     /// like Logseq's hidden built-in properties. They round-trip in the file but
     /// stay out of the editor and the rendered body.
-    public static let hiddenPropertyKeys: Set<String> = ["background-color"]
+    public static let numberingPropertyKeys: Set<String> = ["knopo.list-type", "logseq.order-list-type"]
+    public static let hiddenPropertyKeys: Set<String> = [
+        "background-color", "knopo.list-type", "logseq.order-list-type"
+    ]
+
+    public var isNumbered: Bool {
+        properties.contains {
+            ($0.key == "knopo.list-type" && $0.value == "ordered")
+                || ($0.key == "logseq.order-list-type" && $0.value == "number")
+        }
+    }
+
+    public var numberingProperties: [BlockProperty] {
+        properties.filter { Self.numberingPropertyKeys.contains($0.key) }
+    }
+
+    public mutating func setNumbered(_ enabled: Bool) {
+        if enabled {
+            guard !isNumbered else { return }
+            properties.removeAll { $0.key == "knopo.list-type" }
+            properties.append(BlockProperty(key: "knopo.list-type", value: "ordered"))
+        } else {
+            properties.removeAll { Self.numberingPropertyKeys.contains($0.key) }
+        }
+    }
 
     /// Layout properties that are typed and edited as text, but are *not* part of
     /// the rendered body — they describe how the block is laid out, so showing
@@ -118,14 +142,35 @@ public struct Block: Identifiable, Sendable {
     /// Inverse of `editableSource`: re-splits edited text into content and user
     /// properties, preserving `id`/`collapsed` and the hidden display properties
     /// (none of which are shown in the editor).
-    public mutating func setEditableSource(_ text: String) {
-        let preserved = properties.filter { Self.hiddenPropertyKeys.contains($0.key) }
+    public mutating func setEditableSource(
+        _ text: String, numberingSnapshot: [BlockProperty]? = nil
+    ) {
+        let snapshot = numberingSnapshot ?? numberingProperties
+        let preserved = properties.filter {
+            Self.hiddenPropertyKeys.contains($0.key) && !Self.numberingPropertyKeys.contains($0.key)
+        }
         var newContent: [String] = []
         var newProps: [BlockProperty] = []
+        var numbering = snapshot
+        var inFence = false
         for line in text.components(separatedBy: "\n") {
+            if fenceToggles(line) {
+                inFence.toggle()
+                newContent.append(line)
+                continue
+            }
+            if !inFence, let prop = PageParser.matchProperty(line),
+               Self.numberingPropertyKeys.contains(prop.key) {
+                numbering.removeAll { $0.key == prop.key }
+                if prop.key == "knopo.list-type", prop.value != "ordered" {
+                    numbering.removeAll { $0.key == "logseq.order-list-type" }
+                }
+                numbering.append(prop)
+                continue
+            }
             // `id`/`collapsed`/hidden keys aren't shown in the editor; if typed,
             // leave them as content rather than hijacking the managed properties.
-            if let prop = PageParser.matchProperty(line),
+            if !inFence, let prop = PageParser.matchProperty(line),
                prop.key != "id", prop.key != "collapsed",
                !Self.hiddenPropertyKeys.contains(prop.key) {
                 newProps.append(prop)
@@ -134,7 +179,12 @@ public struct Block: Identifiable, Sendable {
             }
         }
         content = newContent.joined(separator: "\n")
-        properties = newProps + preserved
+        // Keep property order when the editor has not changed their values.
+        let combined = newProps + preserved + numbering
+        if combined.count != properties.count || Set(combined) != Set(properties)
+            || newProps != properties.filter({ !Self.hiddenPropertyKeys.contains($0.key) }) {
+            properties = combined
+        }
     }
 }
 

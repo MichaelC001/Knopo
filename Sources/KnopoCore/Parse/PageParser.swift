@@ -4,12 +4,15 @@ public struct ParsedPage: Sendable {
     /// Verbatim text before the first bullet (rare; preserved untouched).
     public var preamble: String
     public var blocks: [Block]
+    var rootMarkers: [ClipboardMarker] = []
 
     public init(preamble: String = "", blocks: [Block] = []) {
         self.preamble = preamble
         self.blocks = blocks
     }
 }
+
+enum ClipboardMarker: Sendable { case plain, bullet, numbered }
 
 /// Parses the on-disk Markdown bullet-list format (SPEC §4.2) into a block tree.
 ///
@@ -22,13 +25,16 @@ public enum PageParser {
         parse(text, plainLinesAsBlocks: false)
     }
 
-    static func parse(_ text: String, plainLinesAsBlocks: Bool) -> ParsedPage {
+    static func parse(
+        _ text: String, plainLinesAsBlocks: Bool
+    ) -> ParsedPage {
         let lines = splitKeepingTerminators(text)
         var preamble = ""
         var roots: [Block] = []
+        var rootMarkers: [ClipboardMarker] = []
         // Open-ancestor chain: (indent, depth) plus the index path of the most
         // recently started block within the tree.
-        var stack: [(indent: Int, depth: Int)] = []
+        var stack: [(indent: Int, depth: Int, contentColumn: Int)] = []
         var pathStack: [Int] = []
         var current: PendingBlock? = nil
         var inFence = false
@@ -36,22 +42,25 @@ public enum PageParser {
 
         func finishCurrent() {
             guard let pending = current else { return }
-            insert(pending.build(preserveID: !plainLinesAsBlocks), at: pending.parentPath, into: &roots)
+            let block = pending.build(preserveID: !plainLinesAsBlocks)
+            if plainLinesAsBlocks, pending.parentPath.isEmpty { rootMarkers.append(pending.marker) }
+            insert(block, at: pending.parentPath, into: &roots)
             current = nil
         }
 
         for line in lines {
-            let leadingIndent = line.prefix { $0 == " " || $0 == "\t" }.count
-            var bullet = inFence ? nil : matchBullet(line)
+            let leadingIndent = plainLinesAsBlocks ? clipboardIndent(line)
+                : line.prefix { $0 == " " || $0 == "\t" }.count
+            var bullet = inFence ? nil : (plainLinesAsBlocks ? matchClipboardBullet(line) : matchBullet(line))
             if bullet != nil, !hasList {
                 hasList = true
                 stack.removeAll()
                 pathStack.removeAll()
             } else if plainLinesAsBlocks, !inFence, bullet == nil {
                 let content = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !content.isEmpty, !hasList || leadingIndent < (current?.indent ?? 0) + 2,
+                if !content.isEmpty, !hasList || leadingIndent < (current?.contentColumn ?? 0),
                    current == nil || matchProperty(content) == nil {
-                    bullet = BulletMatch(indent: 0, text: content)
+                    bullet = BulletMatch(indent: 0, text: content, marker: .plain)
                     hasList = false
                 }
             }
@@ -63,7 +72,8 @@ public enum PageParser {
                 }
                 let depth: Int
                 if let top = stack.last {
-                    if bullet.indent == top.indent {
+                    if bullet.indent == top.indent
+                        || (plainLinesAsBlocks && bullet.indent < top.contentColumn) {
                         depth = top.depth
                         stack.removeLast()
                         pathStack.removeLast()
@@ -75,12 +85,13 @@ public enum PageParser {
                 }
                 let parentPath = pathStack
                 let position = childCount(at: parentPath, in: roots)
-                stack.append((bullet.indent, depth))
+                stack.append((bullet.indent, depth, bullet.indent + bullet.width))
                 pathStack.append(position)
 
                 var pending = PendingBlock(
                     indent: bullet.indent, depth: depth, parentPath: parentPath,
-                    contentColumn: hasList ? bullet.indent + 2 : leadingIndent
+                    contentColumn: hasList ? bullet.indent + bullet.width : leadingIndent,
+                    marker: bullet.marker
                 )
                 pending.appendRaw(line)
                 pending.acceptFirstLine(bullet.text)
@@ -88,7 +99,8 @@ public enum PageParser {
                 current = pending
             } else if var pending = current {
                 pending.appendRaw(line)
-                let stripped = stripContinuationIndent(line, contentColumn: pending.contentColumn)
+                let stripped = stripContinuationIndent(line, contentColumn: pending.contentColumn,
+                                                       expandTabs: plainLinesAsBlocks)
                 let propertySource = plainLinesAsBlocks ? stripped.trimmingCharacters(in: .whitespaces) : stripped
                 if inFence {
                     pending.appendContentLine(stripped)
@@ -101,7 +113,7 @@ public enum PageParser {
                 } else if let prop = matchProperty(propertySource) {
                     pending.acceptProperty(prop)
                 } else {
-                    pending.appendContentLine(stripped)
+                    pending.appendContentLine(plainLinesAsBlocks ? unescapeClipboardOrderedMarker(stripped) : stripped)
                 }
                 current = pending
             } else {
@@ -114,7 +126,9 @@ public enum PageParser {
             current?.appendContentLine(String(opening.trimmingCharacters(in: .whitespaces).prefix(3)))
         }
         finishCurrent()
-        return ParsedPage(preamble: preamble, blocks: roots)
+        var parsed = ParsedPage(preamble: preamble, blocks: roots)
+        parsed.rootMarkers = rootMarkers
+        return parsed
     }
 
     // MARK: - Pending block accumulator
@@ -124,6 +138,7 @@ public enum PageParser {
         var depth: Int
         var parentPath: [Int]
         var contentColumn: Int
+        var marker: ClipboardMarker
         var rawText = ""
         var contentLines: [String] = []
         var id: UUID? = nil
@@ -165,7 +180,7 @@ public enum PageParser {
         }
 
         func build(preserveID: Bool) -> Block {
-            Block(
+            var block = Block(
                 id: preserveID ? (id ?? UUID()) : UUID(),
                 content: contentLines.joined(separator: "\n"),
                 children: [],
@@ -174,6 +189,8 @@ public enum PageParser {
                 properties: properties,
                 raw: RawSource(text: rawText, depth: depth)
             )
+            if marker == .numbered { block.setNumbered(true) }
+            return block
         }
     }
 
@@ -187,7 +204,7 @@ public enum PageParser {
         var i = text.startIndex
         while i < text.endIndex {
             let ch = text[i]
-            if ch == "\n" {
+            if ch == "\n" || ch == "\r\n" {
                 lines.append(text[start...i])
                 i = text.index(after: i)
                 start = i
@@ -212,7 +229,7 @@ public enum PageParser {
     /// Strips a trailing line terminator, if any.
     static func chomp(_ line: String) -> String {
         var l = line
-        if l.hasSuffix("\r\n") { l.removeLast(2) }
+        if l.hasSuffix("\r\n") { l.removeLast() }
         else if l.hasSuffix("\n") || l.hasSuffix("\r") { l.removeLast() }
         return l
     }
@@ -221,6 +238,64 @@ public enum PageParser {
         var indent: Int
         /// Text after "- " (terminator stripped). Empty for a bare "-".
         var text: String
+        var width: Int = 2
+        var marker: ClipboardMarker = .bullet
+    }
+
+    /// Ordered markers are accepted only on the clipboard, never from graph files.
+    static func matchClipboardBullet(_ line: Substring) -> BulletMatch? {
+        if var bullet = matchBullet(line) {
+            bullet.indent = clipboardIndent(line)
+            return bullet
+        }
+        let whitespace = line.prefix { $0 == " " || $0 == "\t" }.count
+        let indent = clipboardIndent(line)
+        let source = line.dropFirst(whitespace)
+        let digits = source.prefix { $0 >= "0" && $0 <= "9" }
+        guard (1...9).contains(digits.count) else { return nil }
+        let suffix = source.dropFirst(digits.count)
+        guard let delimiter = suffix.first, delimiter == "." || delimiter == ")" else { return nil }
+        let rest = suffix.dropFirst()
+        guard rest.isEmpty || rest.first == " " || rest.first == "\t" || rest.first?.isNewline == true
+        else { return nil }
+        let padding = rest.prefix { $0 == " " || $0 == "\t" }
+        let markerEnd = indent + digits.count + 1
+        let column = padding.reduce(markerEnd) { $1 == "\t" ? ($0 / 4 + 1) * 4 : $0 + 1 }
+        return BulletMatch(indent: indent, text: chomp(String(rest.dropFirst(padding.count))),
+                           width: max(markerEnd + 1, column) - indent, marker: .numbered)
+    }
+
+    private static func clipboardIndent(_ line: Substring) -> Int {
+        line.prefix { $0 == " " || $0 == "\t" }
+            .reduce(0) { $1 == "\t" ? ($0 / 4 + 1) * 4 : $0 + 1 }
+    }
+
+    static func escapeClipboardOrderedMarker(_ line: String) -> String {
+        guard let position = clipboardOrderedEscapePosition(line) else { return line }
+        var escaped = line
+        escaped.insert("\\", at: position)
+        return escaped
+    }
+
+    private static func unescapeClipboardOrderedMarker(_ line: String) -> String {
+        guard let position = clipboardOrderedEscapePosition(line), line[position] == "\\" else { return line }
+        var unescaped = line
+        unescaped.remove(at: position)
+        return unescaped
+    }
+
+    // Add and remove one escape layer, preserving backslashes already in the body.
+    private static func clipboardOrderedEscapePosition(_ line: String) -> String.Index? {
+        let indent = line.prefix { $0 == " " || $0 == "\t" }.count
+        let digits = line.dropFirst(indent).prefix { $0 >= "0" && $0 <= "9" }.count
+        guard (1...9).contains(digits) else { return nil }
+        let position = line.index(line.startIndex, offsetBy: indent + digits)
+        let suffix = line[position...].drop { $0 == "\\" }
+        guard let delimiter = suffix.first, delimiter == "." || delimiter == ")" else { return nil }
+        let rest = suffix.dropFirst()
+        guard rest.isEmpty || rest.first == " " || rest.first == "\t" || rest.first?.isNewline == true
+        else { return nil }
+        return position
     }
 
     /// Matches `^(\s*)- (.*)$` or a bare `^(\s*)-$` (empty block).
@@ -233,7 +308,7 @@ public enum PageParser {
         }
         guard i < line.endIndex, line[i] == "-" else { return nil }
         let afterDash = line.index(after: i)
-        if afterDash == line.endIndex || line[afterDash] == "\n" || line[afterDash] == "\r" {
+        if afterDash == line.endIndex || line[afterDash].isNewline {
             return BulletMatch(indent: indent, text: "")
         }
         guard line[afterDash] == " " else { return nil }
@@ -242,15 +317,17 @@ public enum PageParser {
     }
 
     /// Removes up to `contentColumn` leading whitespace characters.
-    static func stripContinuationIndent(_ line: Substring, contentColumn: Int) -> String {
+    static func stripContinuationIndent(
+        _ line: Substring, contentColumn: Int, expandTabs: Bool = false
+    ) -> String {
         var removed = 0
         var i = line.startIndex
         while removed < contentColumn, i < line.endIndex,
               line[i] == " " || line[i] == "\t" {
-            removed += 1
+            removed = expandTabs && line[i] == "\t" ? (removed / 4 + 1) * 4 : removed + 1
             i = line.index(after: i)
         }
-        return String(line[i...])
+        return String(repeating: " ", count: max(0, removed - contentColumn)) + line[i...]
     }
 
     /// `key:: value` (or `key::` with empty value) — key starts with a letter,

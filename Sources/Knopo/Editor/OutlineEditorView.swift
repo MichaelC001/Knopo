@@ -439,6 +439,8 @@ final class OutlineEditorController: NSObject {
         var depth: Int
         var path: [Int]
         var hasChildren: Bool
+        var marker: OutlineNumbering.Marker?
+        var geometry: OutlineMarkerLayout.Geometry
         var rendered: NSAttributedString
         /// Source represented by `rendered`. The focused row's live block is
         /// updated on every keystroke while its hidden preview intentionally is
@@ -554,9 +556,40 @@ final class OutlineEditorController: NSObject {
     private var contextMenuBlockID: UUID?
     /// The block currently being rendered, so a `{{query}}` can exclude itself.
     private var renderingBlockID: UUID?
-    /// Snapshot when the edit session started; structural ops batch all
-    /// keystrokes since then into one undo step (SPEC §13).
-    private var editSessionBefore: PageDocument?
+    /// Typing and structural undo share one session and its starting state.
+    private struct EditSession {
+        var before: PageDocument
+        var initial: OutlineEditorSnapshot
+        var current: OutlineEditorSnapshot
+    }
+    private var editSession: EditSession?
+
+    private func currentOutlineEditorSnapshot() -> OutlineEditorSnapshot? {
+        guard var state = editSession?.current, state.id == focusedBlockID else { return nil }
+        state.text = editor.string
+        state.selection = editor.selectedRange()
+        return state
+    }
+
+    func restoreEditing(_ state: OutlineEditorSnapshot?, onPage page: String) {
+        guard pageName == page, let state else { return }
+        Self.selectionOwner?.clearSelection()
+        let doc = app.document(for: page)
+        guard doc.blocks.block(id: state.id) != nil else { return }
+        editSession = EditSession(before: doc, initial: state, current: state)
+        reloadAndFocus(state.id, selection: state.selection)
+    }
+
+    func rebaseEditingAfterUndo() {
+        guard let state = currentOutlineEditorSnapshot() else { return }
+        editSession?.before = app.document(for: pageName)
+        editSession?.initial = state
+    }
+
+    private func undoEditing(before: OutlineEditorSnapshot?, after: OutlineEditorSnapshot?) -> OutlineEditorUndo {
+        OutlineEditorUndo(owner: self, page: pageName, before: before, after: after)
+    }
+
     /// True while the link panel holds focus; suppresses end-of-edit teardown
     /// when the editor temporarily resigns first responder (§5.5.2).
     private var suppressFocusLoss = false
@@ -679,6 +712,9 @@ final class OutlineEditorController: NSObject {
         // `/image`: open the image file picker at the caret (§5.5.5).
         autocomplete.onImageCommand = { [weak self] in self?.presentImagePicker() }
         // `/date`: open the calendar at the caret (§5.5.4).
+        autocomplete.onNumberedListCommand = { [weak self] range in
+            self?.enableNumbering(removing: range)
+        }
         autocomplete.onDateCommand = { [weak self] in self?.presentDatePicker() }
     }
 
@@ -768,7 +804,7 @@ final class OutlineEditorController: NSObject {
             self.pageName = pageName
             self.zoom = zoom
             focusedBlockID = nil
-            editSessionBefore = nil
+            editSession = nil
             renderCache.removeAll() // another page's blocks; free the memory
             autocomplete.dismiss()
             editor.removeFromSuperview()
@@ -1126,7 +1162,11 @@ final class OutlineEditorController: NSObject {
     private func refreshIfChanged() {
         let doc = app.document(for: pageName)
         let fresh = OutlineOps.visibleRows(in: doc.blocks, zoomRoot: zoom)
-        if !matchesCurrent(fresh) {
+        let source = SourceNumbering(app: app, page: pageName)
+        let geometry = OutlineMarkerLayout.geometry(rows: fresh, markers: source.markers, widths: source.widths)
+        if !matchesCurrent(fresh) || rows.contains(where: {
+            $0.marker != source.markers[$0.block.id] || $0.geometry != geometry[$0.block.id]
+        }) {
             reloadAndFocus(focusedBlockID, selection: focusedBlockID != nil
                 ? editor.selectedRange() : nil)
             return
@@ -1137,7 +1177,7 @@ final class OutlineEditorController: NSObject {
             let row = rows[index]
             guard row.block.id != focusedBlockID,
                   Self.renderDependsOnOtherBlocks(row.block.content) else { continue }
-            let rendered = cachedRender(row.block, depth: row.depth)
+            let rendered = cachedRender(row.block, contentWidth: contentWidth(for: row))
             guard !rendered.isEqual(to: row.rendered) else { continue }
             rows[index].rendered = rendered
             reloadRow(index)
@@ -1162,9 +1202,21 @@ final class OutlineEditorController: NSObject {
     private func rebuildRows(reusingStaticRendersFrom oldRows: [Row]? = nil) {
         let doc = app.document(for: pageName)
         let visible = OutlineOps.visibleRows(in: doc.blocks, zoomRoot: zoom)
+        if let state = editSession?.current, let block = doc.blocks.block(id: state.id) {
+            var expected = block
+            expected.setEditableSource(state.text, numberingSnapshot: state.numberingSnapshot)
+            if expected.content != block.content || expected.properties != block.properties {
+                editSession = nil
+            }
+        }
+        let source = SourceNumbering(app: app, page: pageName)
+        let markers = source.markers
+        let geometry = OutlineMarkerLayout.geometry(rows: visible, markers: markers, widths: source.widths)
         let oldByID = oldRows.map { Dictionary(uniqueKeysWithValues: $0.map { ($0.block.id, $0) }) }
         rows = visible.map { visibleRow in
             let old = oldByID?[visibleRow.block.id]
+            let layout = geometry[visibleRow.id]!
+            let width = OutlineMarkerLayout.contentWidth(origin: layout.contentOrigin, rowWidth: rowLayoutWidth)
             let sameRenderedContent = old.map { oldRow in
                 oldRow.renderedContent == visibleRow.block.content
             } ?? false
@@ -1175,10 +1227,13 @@ final class OutlineEditorController: NSObject {
                 && old?.renderedProperties == visibleRow.block.properties
                 && old?.depth == visibleRow.depth
                 && !dependsOnOtherBlocks
+                && old.map { renderSignature(for: $0.block, contentWidth: contentWidth(for: $0)) }
+                    == renderSignature(for: visibleRow.block, contentWidth: width)
             let rendered = canReuse ? old!.rendered
-                : cachedRender(visibleRow.block, depth: visibleRow.depth)
+                : cachedRender(visibleRow.block, contentWidth: width)
             return Row(block: visibleRow.block, depth: visibleRow.depth, path: visibleRow.path,
-                       hasChildren: visibleRow.hasChildren, rendered: rendered,
+                       hasChildren: visibleRow.hasChildren, marker: markers[visibleRow.id],
+                       geometry: layout, rendered: rendered,
                        renderedContent: visibleRow.block.content,
                        renderedProperties: visibleRow.block.properties,
                        renderDependsOnOtherBlocks: dependsOnOtherBlocks)
@@ -1243,8 +1298,7 @@ final class OutlineEditorController: NSObject {
         return hasher.finalize()
     }
 
-    private func cachedRender(_ block: Block, depth: Int) -> NSAttributedString {
-        let width = contentWidth(forDepth: depth)
+    private func cachedRender(_ block: Block, contentWidth width: CGFloat) -> NSAttributedString {
         guard let signature = renderSignature(for: block, contentWidth: width) else {
             renderCache[block.id] = nil
             return renderBlock(block, contentWidth: width)
@@ -1259,9 +1313,8 @@ final class OutlineEditorController: NSObject {
 
     /// Width available to a row's content at this depth — the same number
     /// `layout()` gives the row, so renders and measurements agree.
-    private func contentWidth(forDepth depth: Int) -> CGFloat {
-        OutlineRowCell.contentWidth(
-            forDepth: depth, rowWidth: rowLayoutWidth)
+    private func contentWidth(for row: Row) -> CGFloat {
+        OutlineMarkerLayout.contentWidth(origin: row.geometry.contentOrigin, rowWidth: rowLayoutWidth)
     }
 
     /// Block ids drift across re-parses (only `id::`-persisted blocks keep
@@ -1276,9 +1329,9 @@ final class OutlineEditorController: NSObject {
     private func render(
         _ content: String, todoBlockID: UUID? = nil,
         contentWidth: CGFloat? = nil,
-        tableWidth: BlockRenderer.TableWidth = .max
+        tableWidth: BlockRenderer.TableWidth = .max, numberedHost: Bool = false
     ) -> NSAttributedString {
-        BlockRenderer.render(content: content, context: BlockRenderer.Context(
+        var context = BlockRenderer.Context(
             resolveBlockRef: { [weak app] id in app?.store.resolveBlock(id)?.block.content },
             assetsDir: app.store.assetsDir,
             inlineQuoteBar: false, // the row cell draws one continuous bar
@@ -1289,7 +1342,9 @@ final class OutlineEditorController: NSObject {
             contentWidth: contentWidth,
             tableWidth: tableWidth,
             todoBlockID: todoBlockID
-        ))
+        )
+        context.generatedRegionOnNewLine = numberedHost
+        return BlockRenderer.render(content: content, context: context)
     }
 
     /// Internal so layout tests can render a transclusion without opening a window.
@@ -1326,7 +1381,6 @@ final class OutlineEditorController: NSObject {
         let y = ((BlockRenderer.baseFont().xHeight - d) / 2).rounded()
         attachment.bounds = CGRect(x: 0, y: y, width: d, height: d)
         let bullet = NSMutableAttributedString(attachment: attachment)
-        bullet.append(NSAttributedString(string: "  ", attributes: [.font: BlockRenderer.baseFont()]))
         return bullet
     }
 
@@ -1340,22 +1394,25 @@ final class OutlineEditorController: NSObject {
     ) -> NSAttributedString? {
         guard embedDepth < 4, !visited.contains(target) else { return nil }
         let rootBlocks: [Block]
+        let source: SourceNumbering
         let link: URL
         switch target {
         case .block(let id):
             guard let hit = app.store.resolveBlock(id) else { return nil }
             rootBlocks = [hit.block]
+            source = SourceNumbering(app: app, page: hit.pageName)
             link = KnopoURL.block(id)
         case .page(let name):
             let blocks = app.document(for: name).blocks
             guard !blocks.isEmpty else { return nil }
             rootBlocks = blocks
+            source = SourceNumbering(app: app, page: name)
             link = KnopoURL.page(name)
         }
         let nextVisited = visited.union([target])
         let body = NSMutableAttributedString()
         var count = 0
-        func walk(_ blocks: [Block], depth: Int) {
+        func walk(_ blocks: [Block], origin: CGFloat) {
             for block in blocks {
                 guard count < 40 else { return } // cap huge embeds
                 count += 1
@@ -1366,12 +1423,11 @@ final class OutlineEditorController: NSObject {
                 // Indent + a real 6px bullet (a drawn circle, not a glyph) so it
                 // matches the outline's bullets exactly; the cell background
                 // marks the region as embedded.
-                let indent = String(repeating: "    ", count: depth)
                 let start = body.length
-                body.append(NSAttributedString(string: indent,
-                                               attributes: [.font: BlockRenderer.baseFont()]))
-                body.append(Self.embedBullet())
-                let hang = bulletHangWidth(indent: indent)
+                let prefix = sourceMarkerPrefix(source.markers[block.id], slot: source.widths[block.id] ?? 0,
+                                                origin: origin)
+                body.append(prefix.text)
+                let hang = prefix.hang
                 let tableOrigin = Self.generatedRegionHorizontalPad + hang
                 let available = contentWidth.map {
                     max(1, $0 - tableOrigin - Self.generatedRegionHorizontalPad)
@@ -1390,17 +1446,20 @@ final class OutlineEditorController: NSObject {
                     contentWidth: available,
                     tableWidth: tableWidth(for: block)
                 )
+                blockContext.generatedRegionOnNewLine = block.isNumbered
                 blockContext.todoBlockID = block.id  // toggle the embedded block, not the source
                 let rendered = BlockRenderer.render(content: block.content, context: blockContext)
                     .mutableCopy() as! NSMutableAttributedString
-                offsetTableLayout(rendered, by: tableOrigin)
                 body.append(rendered)
-                applyHangingIndent(body, range: NSRange(location: start, length: body.length - start),
-                                   hang: hang)
-                if !block.collapsed { walk(block.children, depth: depth + 1) }
+                applySourceMarkerLayout(body, range: NSRange(location: start, length: body.length - start),
+                                        prefix: prefix)
+                if !block.collapsed {
+                    walk(block.children, origin: prefix.hang + OutlineRowCell.indentPerDepth
+                         - OutlineMarkerLayout.generatedGutter)
+                }
             }
         }
-        walk(rootBlocks, depth: 0)
+        walk(rootBlocks, origin: 0)
         guard body.length > 0 else { return nil }
         // Breathing room between embedded blocks and within multi-line ones, so
         // a transclusion isn't cramped (matches the query-result treatment).
@@ -1408,30 +1467,31 @@ final class OutlineEditorController: NSObject {
         return body
     }
 
-    /// Moves a table's tab stops and drawn grid past the generated row's bullet.
-    /// The table renderer normally starts at the text container's leading edge.
-    private func offsetTableLayout(_ table: NSMutableAttributedString, by offset: CGFloat) {
-        guard table.length > 0, offset > 0 else { return }
-        let full = NSRange(location: 0, length: table.length)
-        table.enumerateAttribute(BlockRenderer.tableKey, in: full) { value, range, _ in
-            guard let geometry = value as? BlockRenderer.TableGeometry else { return }
-            table.addAttribute(
-                BlockRenderer.tableKey,
-                value: BlockRenderer.TableGeometry(
-                    columnEdges: geometry.columnEdges.map { $0 + offset },
-                    rowCount: geometry.rowCount
-                ),
-                range: range
-            )
-            table.enumerateAttribute(.paragraphStyle, in: range) { value, subrange, _ in
-                guard let style = (value as? NSParagraphStyle)?
-                    .mutableCopy() as? NSMutableParagraphStyle else { return }
-                style.tabStops = style.tabStops.map {
-                    NSTextTab(textAlignment: $0.alignment, location: $0.location + offset,
-                              options: $0.options)
-                }
-                table.addAttribute(.paragraphStyle, value: style, range: subrange)
+    /// Moves paragraph indents, marker tabs, and table grids in the same coordinate system.
+    private func translateLayout(_ text: NSMutableAttributedString, range: NSRange, by offset: CGFloat) {
+        guard range.length > 0 else { return }
+        let ns = text.string as NSString
+        var position = range.location
+        while position < NSMaxRange(range) {
+            let paragraph = NSIntersectionRange(ns.paragraphRange(
+                for: NSRange(location: position, length: 0)), range)
+            var base: NSParagraphStyle?
+            text.enumerateAttribute(.paragraphStyle, in: paragraph) { value, _, stop in
+                if let value = value as? NSParagraphStyle { base = value; stop.pointee = true }
             }
+            let style = (base?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            style.firstLineHeadIndent += offset
+            style.headIndent += offset
+            style.tabStops = style.tabStops.map {
+                NSTextTab(textAlignment: $0.alignment, location: $0.location + offset, options: $0.options)
+            }
+            text.addAttribute(.paragraphStyle, value: style, range: paragraph)
+            position = NSMaxRange(paragraph)
+        }
+        text.enumerateAttribute(BlockRenderer.tableKey, in: range) { value, range, _ in
+            guard let grid = value as? BlockRenderer.TableGeometry else { return }
+            text.addAttribute(BlockRenderer.tableKey, value: BlockRenderer.TableGeometry(
+                columnEdges: grid.columnEdges.map { $0 + offset }, rowCount: grid.rowCount), range: range)
         }
     }
 
@@ -1466,15 +1526,13 @@ final class OutlineEditorController: NSObject {
         if !containsTable(body, in: last) {
             addParagraphSpacing(to: body, after: 8, range: last)
         }
-        let leftPad = Self.generatedRegionHorizontalPad
         let rightPad = Self.generatedRegionHorizontalPad
+        translateLayout(body, range: full, by: Self.generatedRegionHorizontalPad)
         body.enumerateAttribute(.paragraphStyle, in: full) { value, range, _ in
             let style = (value as? NSParagraphStyle)
                 .flatMap { $0.mutableCopy() as? NSMutableParagraphStyle } ?? NSMutableParagraphStyle()
-            style.firstLineHeadIndent += leftPad
-            style.headIndent += leftPad
-            if style.tailIndent == 0 { style.tailIndent = -rightPad }
             let isTable = containsTable(body, in: range)
+            if style.tailIndent == 0 { style.tailIndent = -rightPad }
             // Breathing room between rows (paragraphs) so a result list isn't
             // cramped; keeps the larger boundary spacing on the first/last line.
             if interlineSpacing > 0, !isTable {
@@ -1521,35 +1579,43 @@ final class OutlineEditorController: NSObject {
         }
     }
 
-    /// Width of a query/embed row's leading indent + bullet, so wrapped lines can
-    /// hang-indent under the content rather than dropping to the region's edge.
-    private func bulletHangWidth(indent: String) -> CGFloat {
-        let s = NSMutableAttributedString(string: indent, attributes: [.font: BlockRenderer.baseFont()])
-        s.append(Self.embedBullet())
-        return ceil(s.size().width)
+    private struct MarkerPrefix {
+        var text: NSAttributedString
+        var origin: CGFloat
+        var hang: CGFloat
+        var tabs: [NSTextTab]
     }
 
-    /// Hangs wrapped lines under the content (after the bullet) by setting
-    /// `headIndent` to the bullet-prefix width. `finishRegion` later adds the
-    /// region's left padding to both indents, keeping the offset.
-    private func applyHangingIndent(_ text: NSMutableAttributedString, range: NSRange, hang: CGFloat) {
+    private func sourceMarkerPrefix(
+        _ marker: OutlineNumbering.Marker?, slot: CGFloat, origin: CGFloat
+    ) -> MarkerPrefix {
+        let right = origin + max(OutlineMarkerLayout.minimumSlot, slot)
+        let hang = right + OutlineMarkerLayout.gap
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: OutlineMarkerLayout.font, .foregroundColor: NSColor.secondaryLabelColor]
+        let text = NSMutableAttributedString(string: "\t", attributes: attributes)
+        if let marker { text.append(NSAttributedString(string: marker.label, attributes: attributes)) }
+        else { text.append(Self.embedBullet()) }
+        text.append(NSAttributedString(string: "\t", attributes: attributes))
+        let markerRight = marker == nil
+            ? right - OutlineMarkerLayout.bulletCenterOffset + BulletView.dotDiameter() / 2 : right
+        return MarkerPrefix(text: text, origin: origin, hang: hang,
+            tabs: [NSTextTab(textAlignment: .right, location: markerRight),
+                   NSTextTab(textAlignment: .left, location: hang)])
+    }
+
+    private func applySourceMarkerLayout(
+        _ text: NSMutableAttributedString, range: NSRange, prefix: MarkerPrefix
+    ) {
         guard range.length > 0 else { return }
-        let ns = text.string as NSString
-        var offset = range.location
-        while offset < NSMaxRange(range) {
-            let paragraph = NSIntersectionRange(ns.paragraphRange(
-                for: NSRange(location: offset, length: 0)), range)
-            // Each table row has its own alignment stops. Copy only this
-            // paragraph's style, including it on the leading bullet.
-            let base = text.attribute(.paragraphStyle, at: NSMaxRange(paragraph) - 1,
-                                      effectiveRange: nil) as? NSParagraphStyle
-            let style = (base?.mutableCopy() as? NSMutableParagraphStyle)
-                ?? NSMutableParagraphStyle()
-            style.firstLineHeadIndent += offset == range.location ? 0 : hang
-            style.headIndent += hang
-            text.addAttribute(.paragraphStyle, value: style, range: paragraph)
-            offset = NSMaxRange(paragraph)
-        }
+        translateLayout(text, range: range, by: prefix.hang)
+        let first = NSIntersectionRange((text.string as NSString).paragraphRange(
+            for: NSRange(location: range.location, length: 0)), range)
+        let style = (text.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+            as! NSParagraphStyle).mutableCopy() as! NSMutableParagraphStyle
+        style.firstLineHeadIndent = prefix.origin
+        style.tabStops = prefix.tabs + style.tabStops.filter { $0.location > prefix.hang }
+        text.addAttribute(.paragraphStyle, value: style, range: first)
     }
 
     /// Read-only render of a `{{query …}}` expression's results (§17): matching
@@ -1582,7 +1648,13 @@ final class OutlineEditorController: NSObject {
             inlineQuoteBar: true,
             tables: false) // a table in a result row shows as its raw source (§5.2)
         var lastPage: String?
+        var sources: [String: SourceNumbering] = [:]
         for hit in result.hits {
+            if sources[hit.pageDisplayName] == nil {
+                sources[hit.pageDisplayName] = SourceNumbering(app: app, page: hit.pageDisplayName)
+            }
+            let source = sources[hit.pageDisplayName]!
+            let marker = source.markers[hit.blockID]
             if hit.pageDisplayName != lastPage {
                 lastPage = hit.pageDisplayName
                 // Journal pages show their pretty date ("Apr 21st, 2026"), not
@@ -1596,10 +1668,9 @@ final class OutlineEditorController: NSObject {
             // An empty block (e.g. a page-properties block surfaced by a
             // page-property query) has nothing to show; the clickable page header
             // above already lists the page, so skip the blank bullet row.
-            if hit.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
-            let row = NSMutableAttributedString(
-                string: "    ", attributes: [.font: BlockRenderer.baseFont()])
-            row.append(Self.embedBullet())
+            if marker == nil && hit.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+            let prefix = sourceMarkerPrefix(marker, slot: source.widths[hit.blockID] ?? 0, origin: OutlineRowCell.indentPerDepth)
+            let row = NSMutableAttributedString(attributedString: prefix.text)
             var hitContext = inner
             hitContext.todoBlockID = hit.blockID  // toggle this hit's block, not the host
             row.append(BlockRenderer.render(content: hit.content, context: hitContext))
@@ -1608,8 +1679,7 @@ final class OutlineEditorController: NSObject {
             // a re-parse, and then the page cannot be resolved.
             addNavigationLink(row, KnopoURL.block(hit.blockID, onPage: hit.pageDisplayName),
                               over: NSRange(location: 0, length: row.length))
-            applyHangingIndent(row, range: NSRange(location: 0, length: row.length),
-                               hang: bulletHangWidth(indent: "    "))
+            applySourceMarkerLayout(row, range: NSRange(location: 0, length: row.length), prefix: prefix)
             line(row)
         }
         if result.total > result.hits.count {
@@ -1650,7 +1720,7 @@ final class OutlineEditorController: NSObject {
         renderingBlockID = block.id
         defer { renderingBlockID = nil }
         let body = render(block.content, todoBlockID: block.id,
-                         contentWidth: contentWidth, tableWidth: tableWidth(for: block))
+                         contentWidth: contentWidth, tableWidth: tableWidth(for: block), numberedHost: block.isNumbered)
         let shown = block.properties.filter {
             !Block.hiddenPropertyKeys.contains($0.key)
                 && !Block.editOnlyPropertyKeys.contains($0.key)
@@ -1705,9 +1775,9 @@ final class OutlineEditorController: NSObject {
         }
     }
 
-    private func animationRow(at index: Int) -> (id: UUID, depth: Int)? {
+    private func animationRow(at index: Int) -> (id: UUID, x: CGFloat)? {
         guard rows.indices.contains(index) else { return nil }
-        return (rows[index].block.id, rows[index].depth)
+        return (rows[index].block.id, rows[index].geometry.contentOrigin)
     }
 
     /// Full reload from the store, then re-attaches the shared editor to the
@@ -1756,7 +1826,8 @@ final class OutlineEditorController: NSObject {
             // Keep the editor attached when only the outline structure changed.
             // Reattaching repeats highlighting and text layout before the slide.
             if !(folding || indenting) || previousFocus != newFocus || editor.window == nil
-                || reloadedIDs.contains(newFocus) {
+                || reloadedIDs.contains(newFocus)
+                || (editSession?.current.id == newFocus && editSession?.current.text != editor.string) {
                 attachEditor(to: newFocus, selection: selection, startSession: false)
             } else if indenting {
                 DispatchQueue.main.async { [weak self] in
@@ -1827,21 +1898,22 @@ final class OutlineEditorController: NSObject {
                 && !(folding && row.block.id == focusedBlockID)
             if needsRenderReload
                 || prev.depth != row.depth
-                || prev.hasChildren != row.hasChildren {
+                || prev.hasChildren != row.hasChildren
+                || prev.marker != row.marker || prev.geometry != row.geometry {
                 changed.append(index)
                 let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
                     as? OutlineRowCell
-                if indenting, needsRenderReload, row.block.id == focusedBlockID, let cell,
-                   OutlineRowCell.enclosing(editor) === cell,
-                   editor.string == row.block.editableSource {
+                if row.block.id == focusedBlockID, let cell,
+                   OutlineRowCell.enclosing(editor) === cell {
                     // Typing leaves the static render stale. Refresh the row
                     // without replacing or re-highlighting its editor.
                     configure(cell, at: index)
                 } else if indenting && !needsRenderReload {
+                    cell?.updateMarker(row.marker, geometry: row.geometry, source: row.block.content)
                     cell?.updateStructure(
                         depth: row.depth, hasChildren: row.hasChildren && row.block.id != zoom,
                         collapsed: row.block.collapsed && row.block.id != zoom,
-                        isEmptyLeaf: Self.hidesBullet(
+                        isEmptyLeaf: !row.block.isNumbered && Self.hidesBullet(
                             content: row.block.content, hasChildren: row.hasChildren,
                             isFocused: row.block.id == focusedBlockID, isOnlyRow: rows.count == 1))
                 } else {
@@ -1896,7 +1968,7 @@ final class OutlineEditorController: NSObject {
         for index in rows.indices {
             let content = rows[index].block.content
             guard BlockKind.classify(content).isTable || content.contains("{{embed") else { continue }
-            let rendered = cachedRender(rows[index].block, depth: rows[index].depth)
+            let rendered = cachedRender(rows[index].block, contentWidth: contentWidth(for: rows[index]))
             guard rendered !== rows[index].rendered else { continue }
             rows[index].rendered = rendered
             if rows[index].block.id != focusedBlockID { changed.insert(index) }
@@ -1976,25 +2048,32 @@ final class OutlineEditorController: NSObject {
         if let previous, previous != id,
            let prevIndex = rows.firstIndex(where: { $0.block.id == previous }) {
             rows[prevIndex].rendered = cachedRender(rows[prevIndex].block,
-                                                    depth: rows[prevIndex].depth)
+                                                    contentWidth: contentWidth(for: rows[prevIndex]))
             reloadRow(prevIndex)
         }
     }
 
     private func attachEditor(to id: UUID, selection: NSRange?, startSession: Bool) {
         guard let index = rows.firstIndex(where: { $0.block.id == id }) else { return }
+        let block = rows[index].block
+        if editSession?.current.id != id {
+            let state = OutlineEditorSnapshot(block: block, selection: selection ?? NSRange(location: 0, length: 0))
+            editSession = EditSession(before: app.document(for: pageName), initial: state, current: state)
+        }
         if startSession && focusedBlockID != id {
-            editSessionBefore = app.document(for: pageName)
+            editSession?.before = app.document(for: pageName)
+            if let state = editSession?.current { editSession?.initial = state }
         }
         focusedBlockID = id
         endOtherEditing()
         // Undo/redo has to be able to close this typing run first (§13).
         app.closePendingEdit = { [weak self] in self?.closeEditSessionForUndo() }
+        app.focusedOutline = self
         // A hint only on the sole block of an otherwise-empty page (SPEC §5.4);
         // set on every attach, so a reused editor never carries a stale one.
         editor.emptyHint = rows.count == 1 ? BlockRenderer.emptyBlockHint : nil
         // Edit the full source — content plus user `key:: value` lines (§3.2).
-        editor.setContent(rows[index].block.editableSource)
+        editor.setContent(editSession?.current.text ?? block.editableSource)
         guard let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: true)
             as? OutlineRowCell else { return }
         cell.embedEditor(editor)
@@ -2048,13 +2127,13 @@ final class OutlineEditorController: NSObject {
         flushEditSessionUndo()
         autocomplete.dismiss()
         focusedBlockID = nil
-        editSessionBefore = nil
+        editSession = nil
         editor.removeFromSuperview()
         if tableView.window?.firstResponder === editor {
             tableView.window?.makeFirstResponder(tableView)
         }
         if let index = rows.firstIndex(where: { $0.block.id == id }) {
-            rows[index].rendered = cachedRender(rows[index].block, depth: rows[index].depth)
+            rows[index].rendered = cachedRender(rows[index].block, contentWidth: contentWidth(for: rows[index]))
             reloadRow(index)
         }
     }
@@ -2254,30 +2333,25 @@ final class OutlineEditorController: NSObject {
         // a collapsed block's children are hidden and can't be selected, so its
         // full subtree is included.
         let doc = app.document(for: pageName)
+        let liveByID = Dictionary(uniqueKeysWithValues: doc.blocks.flattened.map { ($0.id, $0) })
         let selected = selectedRows.sorted().filter {
             rows.indices.contains($0) && (includingZoomRoot || rows[$0].block.id != zoom)
         }
         guard let baseDepth = selected.map({ rows[$0].depth }).min() else { return nil }
-        var out = ""
+        var forest: [Block] = []
+        var stack: [(depth: Int, path: [Int])] = []
         for row in selected {
-            // Resolve the live block (row caches go stale for a block whose
-            // descendant was just edited — see `copySubtreeMarkdown`).
-            guard let block = doc.blocks.block(id: rows[row].block.id) else { continue }
-            let pad = String(repeating: "  ", count: max(0, rows[row].depth - baseDepth))
-            // The zoom root shows its children even when collapsed. They are
-            // selectable rows there, so they must not be copied twice.
-            if !block.children.isEmpty, block.collapsed, block.id != zoom {
-                for line in OutlineOps.copyMarkdown(block).components(separatedBy: "\n")
-                where !line.isEmpty {
-                    out += pad + line + "\n"
-                }
-            } else {
-                let lines = block.content.isEmpty ? [""] : block.content.components(separatedBy: "\n")
-                out += pad + "- " + lines[0] + "\n"
-                for line in lines.dropFirst() { out += pad + "  " + line + "\n" }
-            }
+            guard var block = liveByID[rows[row].block.id] else { continue }
+            let depth = max(0, rows[row].depth - baseDepth)
+            if !block.collapsed || block.id == zoom { block.children = [] }
+            while let last = stack.last, last.depth >= depth { stack.removeLast() }
+            let parent = stack.last?.path ?? []
+            let count = parent.isEmpty ? forest.count : forest.block(at: parent)!.children.count
+            let path = parent + [count]
+            forest.insert(block, at: path)
+            stack.append((depth, path))
         }
-        return out.isEmpty ? nil : out
+        return forest.isEmpty ? nil : OutlineOps.copyMarkdown(forest)
     }
 
     /// Cmd+V in node-selection mode: paste the clipboard's blocks right after the
@@ -2533,43 +2607,51 @@ final class OutlineEditorController: NSObject {
     /// Returns false, and commits nothing, for an edit that would leave a
     /// zoomed view's subtree (see `OutlineOps.keepsZoomScope`).
     @discardableResult
-    private func commitStructural(_ doc: PageDocument, label: String) -> Bool {
+    private func commitStructural(_ doc: PageDocument, label: String,
+                                  focusAfter: UUID? = nil, selectionAfter: NSRange? = nil) -> Bool {
         let before = app.document(for: pageName)
         if let zoom, !OutlineOps.keepsZoomScope(before: before.blocks, after: doc.blocks, root: zoom) {
             NSSound.beep()
             return false
         }
         flushEditSessionUndo()
-        app.commit(doc, undoLabel: label, before: app.document(for: pageName))
-        editSessionBefore = doc
+        let beforeState = currentOutlineEditorSnapshot()
+        var afterState = beforeState
+        if let id = focusAfter ?? focusedBlockID, let block = doc.blocks.block(id: id) {
+            let previous = before.blocks.block(id: id)
+            if id != beforeState?.id || block.content != previous?.content
+                || block.properties != previous?.properties {
+                afterState = OutlineEditorSnapshot(block: block,
+                    selection: selectionAfter ?? editor.selectedRange())
+            }
+            if let selectionAfter { afterState?.selection = selectionAfter }
+        }
+        app.commit(doc, undoLabel: label, before: app.document(for: pageName),
+                   editor: undoEditing(before: beforeState, after: afterState))
+        editSession = afterState.map { EditSession(before: doc, initial: $0, current: $0) }
         return true
     }
 
-    /// Closes the current text-editing session into a single undo step. Plain
-    /// typing (content or properties) commits without undo entries; this turns
-    /// "everything typed in this block since focus" into one undoable change,
-    /// so Cmd+Z after editing doesn't jump to a far older state.
-    /// Closes the current typing run so an undo can act on it, then re-baselines
-    /// the run once that undo has landed — otherwise the next close would measure
-    /// against the pre-undo state and push an entry reinstating what was undone.
+    /// Records pending typing before global undo restores the document and editor.
     private func closeEditSessionForUndo() {
         flushEditSessionUndo()
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.focusedBlockID != nil else { return }
-            self.editSessionBefore = self.app.document(for: self.pageName)
-        }
     }
 
     private func flushEditSessionUndo() {
-        guard let before = editSessionBefore, let id = focusedBlockID else { return }
+        guard let session = editSession, let state = currentOutlineEditorSnapshot() else { return }
+        let before = session.before
+        let id = state.id
         let current = app.document(for: pageName)
         guard let b = before.blocks.block(id: id), let c = current.blocks.block(id: id) else {
             return
         }
-        if b.content != c.content || b.properties != c.properties {
-            app.commit(current, undoLabel: "Edit Block", before: before)
+        if b.content != c.content || b.properties != c.properties
+            || state.text != session.initial.text {
+            app.commit(current, undoLabel: "Edit Block", before: before,
+                       editor: undoEditing(before: session.initial, after: state), numberingChanged: false)
         }
-        editSessionBefore = current
+        editSession?.before = current
+        editSession?.initial = state
     }
 
     // MARK: - Row actions
@@ -2690,15 +2772,19 @@ final class OutlineEditorController: NSObject {
     func previewAttributedString(forPage name: String) -> NSAttributedString? {
         let doc = app.document(for: name)
         let out = NSMutableAttributedString()
-        for row in OutlineOps.visibleRows(in: doc.blocks).prefix(10)
-        where !row.block.content.isEmpty {
+        let source = SourceNumbering(app: app, page: name)
+        var parentContent: [Int: CGFloat] = [:]
+        for row in OutlineOps.visibleRows(in: doc.blocks).prefix(10) {
+            let origin = row.depth == 0 ? 0 : (parentContent[row.depth - 1] ?? 0)
+                + OutlineRowCell.indentPerDepth - OutlineMarkerLayout.generatedGutter
+            let prefix = sourceMarkerPrefix(source.markers[row.id], slot: source.widths[row.id] ?? 0, origin: origin)
+            parentContent[row.depth] = prefix.hang
+            guard !row.block.content.isEmpty || row.block.isNumbered else { continue }
             if out.length > 0 { out.append(NSAttributedString(string: "\n")) }
-            let indent = String(repeating: "    ", count: row.depth)
-            out.append(NSAttributedString(string: "\(indent)\u{2022} ", attributes: [
-                .font: BlockRenderer.baseFont(),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-            ]))
+            let start = out.length
+            out.append(prefix.text)
             out.append(renderForPreview(row.block.content))
+            applySourceMarkerLayout(out, range: NSRange(location: start, length: out.length - start), prefix: prefix)
         }
         if out.length == 0 {
             out.append(Self.pill(doc.fileExists
@@ -2715,13 +2801,24 @@ final class OutlineEditorController: NSObject {
     func previewAttributedString(forTag tag: String) -> NSAttributedString? {
         let hits = (try? app.store.cache.blocks(taggedWith: tag))?.prefix(10) ?? []
         let out = NSMutableAttributedString()
-        for hit in hits where !hit.content.isEmpty {
+        var sources: [String: SourceNumbering] = [:]
+        for hit in hits {
+            if sources[hit.pageDisplayName] == nil {
+                sources[hit.pageDisplayName] = SourceNumbering(app: app, page: hit.pageDisplayName)
+            }
+            let source = sources[hit.pageDisplayName]!
+            let marker = source.markers[hit.blockID]
+            if hit.content.isEmpty && marker == nil { continue }
             if out.length > 0 { out.append(NSAttributedString(string: "\n")) }
             out.append(NSAttributedString(string: "\(app.displayTitle(for: hit.pageDisplayName))  ",
                                           attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ]))
+            if let marker {
+                out.append(NSAttributedString(string: marker.label + " ", attributes: [
+                    .font: OutlineMarkerLayout.font, .foregroundColor: NSColor.secondaryLabelColor]))
+            }
             out.append(renderForPreview(hit.content))
         }
         if out.length == 0 { out.append(Self.pill(L("empty"))) }
@@ -2778,6 +2875,12 @@ final class OutlineEditorController: NSObject {
                                   action: #selector(copySelectionAction), keyEquivalent: "")
             copy.target = self
             menu.addItem(copy)
+            let numbered = NSMenuItem(title: L("Numbered List"),
+                                      action: #selector(toggleNumberedList(_:)), keyEquivalent: "")
+            numbered.target = self
+            numbered.representedObject = id
+            numbered.state = numberingIsEnabled(on: numberingTargets(for: id)) ? .on : .off
+            menu.addItem(numbered)
             menu.addItem(.separator())
             let delete = NSMenuItem(title: String(localized: "Delete \(selectedRows.count) Blocks",
                                                  comment: "Block context menu, multi-selection"),
@@ -2809,6 +2912,12 @@ final class OutlineEditorController: NSObject {
 
         menu.addItem(.separator())
         contextMenuBlockID = id
+        let numbered = NSMenuItem(title: L("Numbered List"),
+                                  action: #selector(toggleNumberedList(_:)), keyEquivalent: "")
+        numbered.target = self
+        numbered.representedObject = id
+        numbered.state = numberingIsEnabled(on: numberingTargets(for: id)) ? .on : .off
+        menu.addItem(numbered)
         let colorItem = NSMenuItem(title: L("Background Color"), action: nil, keyEquivalent: "")
         colorItem.submenu = backgroundColorMenu(for: id)
         menu.addItem(colorItem)
@@ -2821,6 +2930,75 @@ final class OutlineEditorController: NSObject {
         delete.representedObject = id
         menu.addItem(delete)
         NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    private func numberingTargets(for id: UUID) -> [UUID] {
+        if hasSelection, selectedRows.contains(where: { rows[$0].block.id == id }) {
+            return topMostSelectedRows().map { rows[$0].block.id }
+        }
+        return [id]
+    }
+
+    private func numberingIsEnabled(on ids: [UUID]) -> Bool {
+        let selected = Set(ids)
+        let doc = app.document(for: pageName)
+        let targets = doc.blocks.flattened.filter { selected.contains($0.id) }
+        return !targets.isEmpty && targets.allSatisfy(\.isNumbered)
+    }
+
+    @objc private func toggleNumberedList(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        setNumbering(on: numberingTargets(for: id))
+    }
+
+    /// Applies only to the selected roots. Their children keep their own format.
+    func setNumbering(on ids: [UUID]) {
+        var doc = app.document(for: pageName)
+        var selected = Set(ids)
+        let targets = doc.blocks.flattened.filter { selected.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        let enabled = !targets.allSatisfy(\.isNumbered)
+        func apply(_ blocks: inout [Block]) {
+            for index in blocks.indices {
+                if selected.remove(blocks[index].id) != nil { blocks[index].setNumbered(enabled) }
+                if selected.isEmpty { return }
+                apply(&blocks[index].children)
+            }
+        }
+        apply(&doc.blocks)
+        let selection = focusedBlockID == nil ? nil : editor.selectedRange()
+        guard commitStructural(doc, label: "Numbered List") else { return }
+        animateStructuralEdit(duration: BlockEditAnimation.indentationDuration) {
+            reloadAndFocus(focusedBlockID, selection: selection, indenting: true)
+        }
+    }
+
+    private func enableNumbering(removing range: NSRange) {
+        guard let id = focusedBlockID, range.location >= 0,
+              NSMaxRange(range) <= editor.string.utf16.count else { return }
+        var doc = app.document(for: pageName)
+        guard let path = doc.blocks.path(to: id) else { return }
+        let text = (editor.string as NSString).replacingCharacters(in: range, with: "")
+        doc.blocks.update(at: path) {
+            $0.setEditableSource(text, numberingSnapshot: editSession?.current.numberingSnapshot)
+            $0.setNumbered(true)
+        }
+        let selection = NSRange(location: range.location, length: 0)
+        guard commitStructural(doc, label: "Numbered List", selectionAfter: selection) else { return }
+        reloadAndFocus(id, selection: selection)
+    }
+
+    func editorNumberedShortcut() {
+        guard let id = focusedBlockID,
+              app.document(for: pageName).blocks.block(id: id)?.isNumbered == false else { return }
+        enableNumbering(removing: NSRange(location: 0, length: 3))
+    }
+
+    private func clearFocusedNumbering() -> Bool {
+        guard let id = focusedBlockID,
+              app.document(for: pageName).blocks.block(id: id)?.isNumbered == true else { return false }
+        setNumbering(on: [id])
+        return true
     }
 
     /// The color palette submenu (Logseq-style). A checkmark marks the block's
@@ -2980,7 +3158,11 @@ final class OutlineEditorController: NSObject {
         let wasFocused = focusedBlockID == id
         let previousID = index > 0 ? rows[index - 1].block.id : nil
         _ = OutlineOps.delete(path, in: &doc.blocks)
-        guard commitStructural(doc, label: "Delete Block") else { return }
+        let focus = wasFocused ? previousID : focusedBlockID
+        let caret = focus.flatMap { doc.blocks.block(id: $0)?.content.utf16.count } ?? 0
+        let selection = wasFocused ? NSRange(location: caret, length: 0) : editor.selectedRange()
+        guard commitStructural(doc, label: "Delete Block", focusAfter: focus,
+                               selectionAfter: selection) else { return }
         animateStructuralEdit(removingIDs: Set(subtreeIDs)) {
             reloadAndFocus(wasFocused ? nil : focusedBlockID, selection: nil)
             if wasFocused, let previousID,
@@ -3140,7 +3322,7 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             default: return false
             }
         }
-        let isEmptyLeaf = Self.hidesBullet(
+        let isEmptyLeaf = !model.block.isNumbered && Self.hidesBullet(
             content: model.block.content, hasChildren: model.hasChildren,
             isFocused: model.block.id == focusedBlockID, isOnlyRow: rows.count == 1)
         // `background-color:: <name>` tints the block as a soft colored box (SPEC §5.6).
@@ -3162,12 +3344,13 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
             blockColor: blockColor,
             callbacks: rowCallbacks(for: model.block.id)
         )
+        cell.updateMarker(model.marker, geometry: model.geometry, source: model.block.content)
         if model.block.id == focusedBlockID {
             cell.embedEditor(editor)
         } else {
             cell.showRendered(findHighlighted(row: row) ?? model.rendered)
             // A pure-embed block hands its bullet to the transcluded subtree.
-            if isPureEmbed { cell.setBulletHidden(true) }
+            if isPureEmbed && !model.block.isNumbered { cell.setBulletHidden(true) }
         }
     }
 
@@ -3199,14 +3382,13 @@ extension OutlineEditorController: NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard rows.indices.contains(row) else { return OutlineRowCell.minRowHeight }
         let model = rows[row]
-        let contentWidth = OutlineRowCell.contentWidth(
-            forDepth: model.depth, rowWidth: rowLayoutWidth
-        )
+        let contentWidth = contentWidth(for: model)
         if model.block.id == focusedBlockID {
             // Focused rows show the full editable source (content + property
             // lines); measure that with the editor's own TextKit 2 layout.
             let textHeight = BlockEditorTextView.measureHeight(
-                for: model.block.editableSource, width: contentWidth
+                for: editSession?.current.id == model.block.id ? (editSession?.current.text ?? model.block.editableSource)
+                    : model.block.editableSource, width: contentWidth
             )
             return max(OutlineRowCell.minRowHeight,
                        textHeight + OutlineRowCell.verticalPadding * 2)
@@ -3331,9 +3513,19 @@ extension OutlineEditorController: BlockEditorActions {
         guard let path = doc.blocks.path(to: id) else { return }
         // The editor text is the block's full source — re-split into content
         // and user properties (§3.2), preserving id/collapsed.
-        doc.blocks.update(at: path) { $0.setEditableSource(text) }
-        app.commit(doc) // content keystrokes: debounced save, no undo entry
+        let wasNumbered = rows[index].block.isNumbered
+        let snapshot = editSession?.current.numberingSnapshot ?? rows[index].block.numberingProperties
+        doc.blocks.update(at: path) { $0.setEditableSource(text, numberingSnapshot: snapshot) }
+        editSession?.current.text = text
+        editSession?.current.selection = editor.selectedRange()
+        app.commit(doc, numberingChanged: wasNumbered != doc.blocks.block(at: path)?.isNumbered)
         rows[index].block = doc.blocks.block(at: path) ?? rows[index].block
+        if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? OutlineRowCell {
+            cell.updateMarker(rows[index].marker, geometry: rows[index].geometry, source: rows[index].block.content)
+        }
+        if wasNumbered != rows[index].block.isNumbered {
+            reloadAndFocus(id, selection: editor.selectedRange(), indenting: true)
+        }
         // No bullet toggle here: the focused block always shows its bullet, so
         // emptying it mid-edit must not hide the dot. Unfocused empty leaves
         // hide it at configure time (when focus moves away and the row reloads).
@@ -3352,6 +3544,18 @@ extension OutlineEditorController: BlockEditorActions {
         var doc = app.document(for: pageName)
         guard let path = doc.blocks.path(to: id),
               let block = doc.blocks.block(at: path) else { return }
+        if block.isNumbered, block.children.isEmpty, editor.string.isEmpty {
+            let parentPath = Array(path.dropLast())
+            let parentNumbered = doc.blocks.block(at: parentPath)?.isNumbered == true
+            if parentNumbered, id != zoom, doc.blocks.block(at: parentPath)?.id != zoom {
+                _ = OutlineOps.outdent(path, in: &doc.blocks)
+            } else {
+                doc.blocks.update(at: path) { $0.setNumbered(false) }
+            }
+            guard commitStructural(doc, label: "Numbered List") else { return }
+            reloadAndFocus(id, selection: NSRange(location: 0, length: 0))
+            return
+        }
         // The editor shows the full source (content + property lines). Splitting
         // only ever divides the *content*; clamp the caret into the content
         // region so properties always stay with the original block — Enter in
@@ -3364,7 +3568,8 @@ extension OutlineEditorController: BlockEditorActions {
         guard let newID = split(path, characterOffset, &doc.blocks) else {
             return
         }
-        guard commitStructural(doc, label: "New Block") else { return }
+        guard commitStructural(doc, label: "New Block", focusAfter: newID,
+                               selectionAfter: NSRange(location: 0, length: 0)) else { return }
         // Enter at the start inserts above and keeps focus on the original block.
         let insertedID = newID == id ? doc.blocks.block(at: path)?.id : newID
         animateStructuralEdit(insertedID: insertedID) {
@@ -3405,7 +3610,7 @@ extension OutlineEditorController: BlockEditorActions {
         let delta = (new as NSString).length - (old as NSString).length
         let caret = max(0, editor.selectedRange().location + delta)
         doc.blocks.update(at: path) { $0.content = new }
-        guard commitStructural(doc, label: "Toggle Todo") else { return }
+        guard commitStructural(doc, label: "Toggle Todo", selectionAfter: NSRange(location: caret, length: 0)) else { return }
         reloadAndFocus(id, selection: NSRange(location: caret, length: 0))
     }
 
@@ -3426,6 +3631,7 @@ extension OutlineEditorController: BlockEditorActions {
     }
 
     func editorDeleteEmptyBlock() {
+        if clearFocusedNumbering() { return }
         guard let id = focusedBlockID,
               let index = rows.firstIndex(where: { $0.block.id == id }),
               !rows[index].hasChildren else { return }
@@ -3434,6 +3640,7 @@ extension OutlineEditorController: BlockEditorActions {
     }
 
     func editorMergeWithPrevious() {
+        if clearFocusedNumbering() { return }
         guard let id = focusedBlockID,
               let index = rows.firstIndex(where: { $0.block.id == id }), index > 0 else {
             return
@@ -3446,9 +3653,10 @@ extension OutlineEditorController: BlockEditorActions {
               let (receiver, characterOffset) = OutlineOps.mergeWithPrevious(
                   path, in: &doc.blocks
               ) else { return }
-        guard commitStructural(doc, label: "Merge Blocks") else { return }
         let content = doc.blocks.block(id: receiver)?.content ?? ""
         let caret = Self.utf16Offset(forCharacterOffset: characterOffset, in: content)
+        guard commitStructural(doc, label: "Merge Blocks", focusAfter: receiver,
+                               selectionAfter: NSRange(location: caret, length: 0)) else { return }
         let contentMove = rows[index - 1].block.editableSource.isEmpty
             ? (from: id, to: receiver) : nil
         animateStructuralEdit(removingIDs: [id], contentMove: contentMove) {
@@ -3463,14 +3671,15 @@ extension OutlineEditorController: BlockEditorActions {
         let next = rows[index + 1]
         // Symmetric with backward merge: can't pull up a block that has children,
         // and won't silently drop a block's properties (merge only moves content).
-        guard !next.hasChildren, next.block.properties.isEmpty else { return }
+        guard !next.hasChildren, next.block.properties.allSatisfy({ Block.numberingPropertyKeys.contains($0.key) }) else { return }
         let caretOffset = (rows[index].block.content as NSString).length
         var doc = app.document(for: pageName)
         // Merging the next block "into its previous" (= this block) is exactly a
         // forward delete: its content appends here and the caret stays at the join.
         guard let nextPath = doc.blocks.path(to: next.block.id),
               OutlineOps.mergeWithPrevious(nextPath, in: &doc.blocks) != nil else { return }
-        guard commitStructural(doc, label: "Merge Blocks") else { return }
+        guard commitStructural(doc, label: "Merge Blocks", focusAfter: id,
+                               selectionAfter: NSRange(location: caretOffset, length: 0)) else { return }
         let contentMove = rows[index].block.editableSource.isEmpty
             ? (from: next.block.id, to: id) : nil
         animateStructuralEdit(removingIDs: [next.block.id], contentMove: contentMove) {
@@ -3529,53 +3738,13 @@ extension OutlineEditorController: BlockEditorActions {
     func editorPasteBlocks(_ text: String) {
         guard let id = focusedBlockID else { return }
         var doc = app.document(for: pageName)
-        guard let path = doc.blocks.path(to: id),
-              let current = doc.blocks.block(at: path) else { return }
-        let pasted = OutlineOps.blocksFromPasted(text)
-        guard !pasted.isEmpty, let last = pasted.last else { return }
-        if id == zoom {
-            pasteIntoZoomRoot(pasted, at: path, in: &doc)
-            guard commitStructural(doc, label: "Paste") else { return }
-            // The first pasted block may have become the root itself.
-            let focus = doc.blocks.block(id: last.id) ?? doc.blocks.block(at: path)
-            let caret = ((focus?.content ?? "") as NSString).length
-            reloadAndFocus(focus?.id ?? id, selection: NSRange(location: caret, length: 0))
-            return
-        }
-        var insertAt = path
-        if current.content.isEmpty && current.children.isEmpty {
-            // Pasting into an empty block replaces it.
-            _ = doc.blocks.remove(at: path)
-        } else {
-            insertAt[insertAt.count - 1] += 1
-        }
-        for (i, block) in pasted.enumerated() {
-            var p = insertAt
-            p[p.count - 1] += i
-            doc.blocks.insert(block, at: p)
-        }
-        guard commitStructural(doc, label: "Paste") else { return } // one undo step (SPEC §13)
-        let caret = (last.content as NSString).length
-        reloadAndFocus(last.id, selection: NSRange(location: caret, length: 0))
-    }
-
-    /// Pastes into the zoom root and keeps everything inside it. An empty root
-    /// takes the first block's text and properties and keeps its id. The other
-    /// blocks become the root's first children.
-    private func pasteIntoZoomRoot(_ pasted: [Block], at path: [Int], in doc: inout PageDocument) {
-        guard let root = doc.blocks.block(at: path) else { return }
-        var inside = pasted
-        if root.content.isEmpty, let first = pasted.first {
-            inside = first.children + pasted.dropFirst()
-            doc.blocks.update(at: path) { root in
-                root.content = first.content
-                // A pasted property wins over the root's own value for the same key.
-                let pastedKeys = Set(first.properties.map(\.key))
-                root.properties = root.properties.filter { !pastedKeys.contains($0.key) }
-                    + first.properties
-            }
-        }
-        doc.blocks.update(at: path) { $0.children.insert(contentsOf: inside, at: 0) }
+        guard let path = doc.blocks.path(to: id) else { return }
+        guard let focus = OutlineOps.paste(text, at: path, focusedSourceIsEmpty: editor.string.isEmpty,
+                                           zoomRoot: zoom, in: &doc.blocks) else { return }
+        let caret = (doc.blocks.block(id: focus)?.content ?? "").utf16.count
+        guard commitStructural(doc, label: "Paste", focusAfter: focus,
+                               selectionAfter: NSRange(location: caret, length: 0)) else { return }
+        reloadAndFocus(focus, selection: NSRange(location: caret, length: 0))
     }
 
     func editorPersistPastedBlockReference(_ id: UUID) {

@@ -206,7 +206,10 @@ import KnopoCore
             #expect(style.lineSpacing == 0)
             let plainStyle = try #require(plain.attribute(
                 .paragraphStyle, at: plainOffset, effectiveRange: nil) as? NSParagraphStyle)
-            for (actual, expected) in zip(style.tabStops, plainStyle.tabStops) {
+            // The first paragraph also has tabs for the generated marker.
+            let cellTabs = style.tabStops.filter { $0.location > origin }
+            #expect(cellTabs.count == plainStyle.tabStops.count)
+            for (actual, expected) in zip(cellTabs, plainStyle.tabStops) {
                 #expect(abs(actual.location - expected.location - origin) < 0.5)
             }
             var offset = rowStart + 1 // each cell starts after a tab
@@ -225,7 +228,7 @@ import KnopoCore
                 #expect(frames.count == 1, "Cell \(cell): \(frames)")
                 #expect(frame.minX >= table.1.columnEdges[column] - 0.5)
                 #expect(frame.maxX <= table.1.columnEdges[column + 1] + 0.5)
-                #expect(abs(frame.minX - style.tabStops[column].location) < 1)
+                #expect(abs(frame.minX - cellTabs[column].location) < 1)
                 offset += (cell as NSString).length + 1
             }
             rowStart += (row as NSString).length + 1

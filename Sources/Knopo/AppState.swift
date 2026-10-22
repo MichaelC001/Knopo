@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
     @Published private(set) var allPagesCollapsedSections: Set<String> = []
 
     private var preferenceObservers: Set<AnyCancellable> = []
+    var sourceNumberingCache: [String: SourceNumbering.Cached] = [:]
 
     private var watcher: FileWatcher?
     private let pageSaveQueue = DispatchQueue(
@@ -49,6 +50,7 @@ final class AppState: ObservableObject {
         var label: String
         var before: [PageDocument]
         var after: [PageDocument]
+        var editor: OutlineEditorUndo? = nil
     }
     private var undoStack: [UndoEntry] = []
     private var redoStack: [UndoEntry] = []
@@ -61,6 +63,7 @@ final class AppState: ObservableObject {
     /// Registered by whichever outline holds focus; a stale registration is
     /// harmless, since closing a session with no open session does nothing.
     var closePendingEdit: (() -> Void)?
+    weak var focusedOutline: OutlineEditorController?
 
     /// Quiet period after the last keystroke before a page is written, and the
     /// longest a page may stay unwritten while editing continues (SPEC §9.3).
@@ -212,20 +215,21 @@ final class AppState: ObservableObject {
     /// Commits an edited document: updates memory, schedules the save
     /// (`saveDebounce`, bounded by `saveCeiling` — SPEC §9.3), and records undo
     /// state.
-    func commit(_ doc: PageDocument, undoLabel: String? = nil) {
+    func commit(_ doc: PageDocument, undoLabel: String? = nil, numberingChanged: Bool = true) {
         if let undoLabel {
             let before = store.page(named: doc.name)
             pushUndo(UndoEntry(label: undoLabel, before: [before], after: [doc]))
         }
-        store.updatePage(doc)
+        store.updatePage(doc, numberingChanged: numberingChanged)
         scheduleSave(doc.name)
     }
 
     /// Commit with explicit before-state (callers that batch many keystrokes
     /// into one undo step capture `before` when the edit session starts).
-    func commit(_ doc: PageDocument, undoLabel: String, before: PageDocument) {
-        pushUndo(UndoEntry(label: undoLabel, before: [before], after: [doc]))
-        store.updatePage(doc)
+    func commit(_ doc: PageDocument, undoLabel: String, before: PageDocument,
+                editor: OutlineEditorUndo? = nil, numberingChanged: Bool = true) {
+        pushUndo(UndoEntry(label: undoLabel, before: [before], after: [doc], editor: editor))
+        store.updatePage(doc, numberingChanged: numberingChanged)
         scheduleSave(doc.name)
     }
 
@@ -426,6 +430,7 @@ final class AppState: ObservableObject {
         }
         flushPendingSaves()
         redoStack.append(entry)
+        restoreEditor(entry.editor, undo: true)
         dataVersion += 1
     }
 
@@ -438,7 +443,13 @@ final class AppState: ObservableObject {
         }
         flushPendingSaves()
         undoStack.append(entry)
+        restoreEditor(entry.editor, undo: false)
         dataVersion += 1
+    }
+
+    private func restoreEditor(_ state: OutlineEditorUndo?, undo: Bool) {
+        if let state { state.owner?.restoreEditing(undo ? state.before : state.after, onPage: state.page) }
+        focusedOutline?.rebaseEditingAfterUndo()
     }
 
     // MARK: - Page operations

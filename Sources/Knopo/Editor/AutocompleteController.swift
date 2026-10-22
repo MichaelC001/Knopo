@@ -32,6 +32,7 @@ final class AutocompleteController: NSObject {
         case commandImage(label: String, hint: String)
         /// Opens the graphical date picker (§5.5.4); inserts nothing itself.
         case commandDatePicker(label: String, hint: String)
+        case commandProperty(label: String, hint: String)
     }
 
     // Data providers, injected by the outline controller.
@@ -49,6 +50,7 @@ final class AutocompleteController: NSObject {
     /// Called when `/date` is committed (trigger already removed); the host
     /// opens the date picker at the current caret (§5.5.4).
     var onDateCommand: () -> Void = {}
+    var onNumberedListCommand: (NSRange) -> Void = { _ in }
 
     private(set) var isActive = false
     /// Set just before a commit inserts its replacement, so the `textDidChange`
@@ -226,6 +228,9 @@ final class AutocompleteController: NSObject {
                 out.append(.commandDatePicker(label: "/date", hint: L("pick a date")))
             }
             // Block-level (§5.5).
+            if matches("numbered-list") {
+                out.append(.commandProperty(label: "/numbered-list", hint: L("Numbered List")))
+            }
             if matches("quote") {
                 out.append(.commandPrefix(label: "/quote", prefix: "> ", hint: L("block quote")))
             }
@@ -310,6 +315,12 @@ final class AutocompleteController: NSObject {
             insertion = name.contains(" ") ? "#[[\(name)]]" : "#\(name)"
         case .command(_, let text):
             insertion = text
+        case .commandProperty:
+            let range = NSRange(location: triggerLocation,
+                                length: max(0, textView.selectedRange().location - triggerLocation))
+            dismiss()
+            onNumberedListCommand(range)
+            return
         case .commandPrefix(_, let prefix, _):
             // Remove the trigger text, then prefix the whole block.
             let caret = textView.selectedRange().location
@@ -561,7 +572,8 @@ extension AutocompleteController: NSTableViewDataSource, NSTableViewDelegate {
              .commandInsertCaret(let label, _, _, let hint),
              .commandLink(let label, let hint),
              .commandImage(let label, let hint),
-             .commandDatePicker(let label, let hint):
+             .commandDatePicker(let label, let hint),
+             .commandProperty(let label, let hint):
             let out = NSMutableAttributedString(string: label, attributes: [
                 .font: mainFont, .foregroundColor: NSColor.labelColor,
             ])

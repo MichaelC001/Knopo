@@ -80,7 +80,8 @@ public enum OutlineOps {
         let idx = content.index(content.startIndex, offsetBy: min(max(offset, 0), content.count))
         let head = String(content[..<idx])
         let tail = String(content[idx...])
-        let new = Block(content: head.isEmpty ? "" : tail)
+        var new = Block(content: head.isEmpty ? "" : tail)
+        new.setNumbered(block.children.first?.isNumbered == true)
         blocks.update(at: path) {
             if !head.isEmpty { $0.content = head }
             $0.children.insert(new, at: 0)
@@ -96,7 +97,11 @@ public enum OutlineOps {
     public static func insertBlockAfter(
         _ path: [Int], in blocks: inout [Block], content: String = ""
     ) -> UUID {
-        let new = Block(content: content)
+        var new = Block(content: content)
+        if let block = blocks.block(at: path) {
+            let child = !block.children.isEmpty && !block.collapsed
+            new.setNumbered(child ? block.children.first?.isNumbered == true : block.isNumbered)
+        }
         if let block = blocks.block(at: path), !block.children.isEmpty, !block.collapsed {
             blocks.update(at: path) { $0.children.insert(new, at: 0) }
         } else {
@@ -343,12 +348,15 @@ public enum OutlineOps {
         // block (head and tail both empty) falls through to make a sibling
         // below, preserving "Enter on a blank line adds another below".
         if head.isEmpty, !tail.isEmpty {
-            let new = Block(content: "")
+            var new = Block(content: "")
+            new.setNumbered(block.isNumbered)
             blocks.insert(new, at: path)
             return block.id // cursor stays at the start of the (unchanged) block
         }
         blocks.update(at: path) { $0.content = head }
-        let new = Block(content: tail)
+        var new = Block(content: tail)
+        let child = !block.children.isEmpty && !block.collapsed
+        new.setNumbered(child ? block.children.first?.isNumbered == true : block.isNumbered)
         if let b = blocks.block(at: path), !b.children.isEmpty, !b.collapsed {
             blocks.update(at: path) { $0.children.insert(new, at: 0) }
         } else {
@@ -382,17 +390,31 @@ public enum OutlineOps {
 
     /// Markdown (with indentation) for a copied subtree.
     public static func copyMarkdown(_ block: Block) -> String {
+        copyMarkdown([block])
+    }
+
+    /// One writer serves subtree copies and the forest built from selected rows.
+    public static func copyMarkdown(_ blocks: [Block]) -> String {
         var out = ""
-        func walk(_ b: Block, depth: Int) {
-            let indent = String(repeating: "  ", count: depth)
-            let lines = b.content.isEmpty ? [""] : b.content.components(separatedBy: "\n")
-            out += indent + "- " + lines[0] + "\n"
-            for line in lines.dropFirst() {
-                out += indent + "  " + line + "\n"
+        func walk(_ siblings: [Block], indent: String) {
+            var ordinal = 0
+            for b in siblings {
+                ordinal = b.isNumbered ? ordinal + 1 : 0
+                let marker = b.isNumbered ? "\(ordinal). " : "- "
+                let continuation = indent + String(repeating: " ", count: marker.count)
+                let lines = b.content.isEmpty ? [""] : b.content.components(separatedBy: "\n")
+                out += indent + marker + lines[0] + "\n"
+                var inFence = fenceToggles(lines[0])
+                for line in lines.dropFirst() {
+                    let fence = fenceToggles(line)
+                    let text = inFence || fence ? line : PageParser.escapeClipboardOrderedMarker(line)
+                    out += continuation + text + "\n"
+                    if fence { inFence.toggle() }
+                }
+                walk(b.children, indent: continuation)
             }
-            for child in b.children { walk(child, depth: depth + 1) }
         }
-        walk(block, depth: 0)
+        walk(blocks, indent: "")
         return out
     }
 
@@ -400,11 +422,68 @@ public enum OutlineOps {
     /// bullet markers are present, else one block per non-empty line.
     /// Leading text also becomes blocks, keeping code fences together.
     public static func blocksFromPasted(_ text: String) -> [Block] {
+        clipboardOutline(text).blocks
+    }
+
+    private static func clipboardOutline(_ text: String) -> ParsedPage {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         var parsed = PageParser.parse(normalized, plainLinesAsBlocks: true)
         invalidateAll(&parsed.blocks)
-        return parsed.blocks
+        return parsed
+    }
+
+    /// Fills an empty placeholder without losing its identity or hidden metadata.
+    public static func paste(
+        _ text: String, at path: [Int], focusedSourceIsEmpty: Bool,
+        zoomRoot: UUID? = nil, in blocks: inout [Block]
+    ) -> UUID? {
+        guard let current = blocks.block(at: path) else { return nil }
+        let clipboard = clipboardOutline(text)
+        var incoming = clipboard.blocks
+        guard !incoming.isEmpty else { return nil }
+        let isZoom = current.id == zoomRoot
+        let fill = focusedSourceIsEmpty && current.editableSource.isEmpty && current.content.isEmpty
+            && (isZoom || current.children.isEmpty)
+        if fill, current.isNumbered {
+            for i in incoming.indices where clipboard.rootMarkers[i] == .plain {
+                // An explicit property takes precedence over implicit continuation.
+                if incoming[i].numberingProperties.isEmpty { incoming[i].setNumbered(true) }
+            }
+        }
+        var focus = incoming.last!.id
+        if fill {
+            let first = incoming.removeFirst()
+            if incoming.isEmpty { focus = current.id }
+            blocks.update(at: path) { block in
+                block.content = first.content
+                let userProps = first.properties.filter { !Block.numberingPropertyKeys.contains($0.key) }
+                let keys = Set(userProps.map(\.key))
+                block.properties.removeAll { keys.contains($0.key) }
+                block.properties += userProps
+                if clipboard.rootMarkers[0] == .bullet && first.numberingProperties.isEmpty {
+                    block.setNumbered(false)
+                } else if !first.numberingProperties.isEmpty {
+                    if !first.isNumbered || !block.isNumbered {
+                        block.properties.removeAll { Block.numberingPropertyKeys.contains($0.key) }
+                        block.properties += first.numberingProperties
+                    }
+                }
+                block.children.insert(contentsOf: first.children, at: 0)
+            }
+        }
+        if isZoom {
+            let offset = fill ? (clipboard.blocks.first?.children.count ?? 0) : 0
+            blocks.update(at: path) { $0.children.insert(contentsOf: incoming, at: offset) }
+        } else {
+            var insertion = path
+            insertion[insertion.count - 1] += 1
+            for block in incoming {
+                blocks.insert(block, at: insertion)
+                insertion[insertion.count - 1] += 1
+            }
+        }
+        return focus
     }
 
     private static func invalidateAll(_ blocks: inout [Block]) {

@@ -81,6 +81,8 @@ Increase Line Spacing
 Index size
 Insert
 Invalid page name: “%@”	Error alert; the placeholder is the rejected page name
+Item %@, go to block	Accessible action for a numbered result marker
+Item %@, zoom into block	Accessible action for a numbered outline marker
 Journal	Sidebar section and window title: the journal
 Journals
 Jump to Day…
@@ -103,6 +105,7 @@ No page named “%@”	Error alert; the placeholder is the page name
 No results
 No unlinked references.
 None	Background-color submenu: clears the color
+Numbered List
 Numeric	Journal date format: digits only, 6/10/2026
 OK
 Open Graph
@@ -168,6 +171,7 @@ Uses Unicode date patterns. Add {ordinal} immediately after d for an ordinal day
 Yellow	Block background color
 Zoom In
 Zoom Out
+Zoom into block
 block quote
 embed a block
 embed a page

@@ -32,6 +32,48 @@ import Testing
         #expect(rows[3].breadcrumb == [root])
     }
 
+    @Test(arguments: [CGFloat(0.8), 1, 1.5])
+    func plainResultRowsKeepTheirOriginalAlignment(zoom: CGFloat) async throws {
+        let previous = BlockRenderer.zoom
+        defer { BlockRenderer.zoom = previous }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knopo-result-layout-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try GraphStore(root: root)
+        var doc = try store.createPage(named: "Notes")
+        doc.blocks = [Block(content: "Breadcrumb", children: [Block(content: "Body [[Target]]")])]
+        store.updatePage(doc)
+        try store.savePage(named: "Notes")
+        let hits = try store.cache.backlinks(of: "target")
+        let app = AppState(store: store)
+        defer { app.shutdown() }
+        BlockRenderer.zoom = zoom
+        let host = NSHostingView(rootView: BlockResultList(groups: [(key: "Notes", value: hits)], editable: false)
+            .environmentObject(app).environmentObject(Navigator(app: app))
+            .frame(width: 600, alignment: .topLeading))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        try await waitUntil {
+            window.layoutIfNeeded()
+            return self.descendants(host, of: RenderedTextView.self).count == 1
+        }
+        let text = try #require(descendants(host, of: RenderedTextView.self).first)
+        // SwiftUI rounds the hosted AppKit view to a pixel boundary.
+        let expectedTextX = BlockResultList.levelIndent + ResultRowLayout.bulletSize / 2
+            + OutlineMarkerLayout.bulletCenterOffset + ResultRowLayout.markerInset
+        #expect(abs(text.convert(text.bounds, to: host).minX - expectedTextX) <= 0.5)
+        let gutter = ResultRowLayout.gutterWidth(slot: 0)
+        let leading = BlockResultList.levelIndent - ResultRowLayout.dotInset
+        let dotLeft = leading + gutter - ResultRowLayout.markerInset
+            - OutlineMarkerLayout.bulletCenterOffset - ResultRowLayout.bulletSize / 2
+        let breadcrumbLeft = leading + ResultRowLayout.dotInset
+        // Keep the hit area generous and align the dot with its breadcrumb and page title.
+        #expect(gutter >= 18 * zoom)
+        #expect(abs(dotLeft - breadcrumbLeft) < 0.01)
+        #expect(abs(dotLeft - BlockResultList.levelIndent) < 0.01)
+    }
+
     @Test(arguments: [false, true])
     func rowsUseTheOutlineTextViewAndOpenLinks(showBrackets: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
@@ -96,9 +138,14 @@ import Testing
         source.blocks = [Block(content: "![pic](../assets/pic.png) for [[Target]]")]
         seed.updatePage(source)
         try seed.savePage(named: "Source")
-        // Reopened, the page parses with fresh ids while the index keeps the old one.
+        // A matching file adopts indexed IDs on reopening. Exercise the fallback
+        // too, with a live block whose volatile ID has since been replaced.
         let store = try GraphStore(root: root)
         let hit = try #require(try store.cache.backlinks(of: PageName.key("Target")).first)
+        var reopened = try store.page(named: "Source")
+        #expect(reopened.blocks[0].id == hit.blockID)
+        reopened.blocks[0] = Block(content: reopened.blocks[0].content)
+        store.updatePage(reopened)
         try #require(store.page(named: "Source").blocks[0].id != hit.blockID)
         let app = AppState(store: store)
         defer { app.shutdown() }

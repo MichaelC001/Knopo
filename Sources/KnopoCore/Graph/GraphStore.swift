@@ -121,6 +121,7 @@ public final class GraphStore {
 
     /// In-memory documents (parsed on demand). Key = normalized page name.
     private var loaded: [String: PageDocument] = [:]
+    private var loadedNumbering: [String: OutlineNumbering.Snapshot] = [:]
     private var loadedRevisions: [String: UInt64] = [:]
 
     /// Called after pages change on disk behind the app's back (external edits).
@@ -147,10 +148,14 @@ public final class GraphStore {
         self.cache = cache
         self.pagePersistence = PagePersistence(root: root, cache: cache)
         self.config = GraphConfig.load(from: root.appendingPathComponent(".knopo/config.json"))
-        // A cache built by older indexing logic is fully rebuilt (incremental
-        // sync would otherwise skip unchanged files and keep stale rows).
-        let staleIndex = cache.indexVersion != CacheDB.indexVersion
-        try synchronizeIndex(force: staleIndex)
+        // Version 7 only changes CRLF parsing. Earlier versions also changed
+        // page identity and need a full rebuild.
+        let previousVersion = cache.indexVersion
+        let staleIndex = previousVersion != CacheDB.indexVersion
+        let repairCRLF = previousVersion == 6 && CacheDB.indexVersion == 7
+        let onDisk = try Self.synchronizeIndexFiles(at: root, cache: cache,
+            force: staleIndex && !repairCRLF, repairCRLF: repairCRLF)
+        pruneStaleFavourites(onDisk: onDisk)
         if staleIndex { try cache.setIndexVersion(CacheDB.indexVersion) }
     }
 
@@ -180,20 +185,30 @@ public final class GraphStore {
     /// Shared file synchronization for startup, external force-sync, and the
     /// user-triggered rebuild. Returns the on-disk keys for config cleanup.
     private static func synchronizeIndexFiles(
-        at root: URL, cache: CacheDB, force: Bool
+        at root: URL, cache: CacheDB, force: Bool, repairCRLF: Bool = false
     ) throws -> Set<String> {
-        if force { try cache.clearAll() }
-        let known = force ? [:] : try cache.fileStamps()
-        var onDisk = Set<String>()
-        for (url, name, key, isJournal) in resolvedFiles(at: root) {
-            onDisk.insert(key)
-            guard let stamp = Self.stamp(of: url) else { continue }
-            if !force, known[key] == stamp { continue }
-            let doc = Self.read(url: url, name: name, isJournal: isJournal)
-            try cache.indexPage(doc, stamp: stamp)
-        }
+        let files = resolvedFiles(at: root)
+        let onDisk = Set(files.map(\.key))
+        let known = try cache.fileStamps()
+        // Free persisted block IDs under obsolete page keys before inserting
+        // their current pages. Forced rebuilds also repair orphaned rows.
         for listing in try cache.allPages() where !onDisk.contains(listing.nameKey) {
             try cache.removePage(key: listing.nameKey)
+        }
+        if force { try cache.removeOrphanedRows() }
+        for (url, name, key, isJournal) in files {
+            guard let stamp = Self.stamp(of: url) else { continue }
+            var text: String?
+            if !force, known[key] == stamp {
+                guard repairCRLF else { continue }
+                text = try String(contentsOf: url, encoding: .utf8)
+                guard text?.contains("\r\n") == true else { continue }
+            }
+            var doc = Self.read(url: url, name: name, isJournal: isJournal, text: text)
+            if known[key] == stamp, !repairCRLF {
+                try cache.reuseIndexedIDs(in: &doc, stamp: stamp)
+            }
+            try cache.indexPage(doc, stamp: stamp, force: force)
         }
         return onDisk
     }
@@ -253,8 +268,8 @@ public final class GraphStore {
         return CacheDB.FileStamp(mtime: mtime.timeIntervalSince1970, size: size)
     }
 
-    private static func read(url: URL, name: String, isJournal: Bool) -> PageDocument {
-        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    private static func read(url: URL, name: String, isJournal: Bool, text: String? = nil) -> PageDocument {
+        let text = text ?? (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         let parsed = PageParser.parse(text)
         return PageDocument(
             name: name, blocks: parsed.blocks, preamble: parsed.preamble,
@@ -280,10 +295,11 @@ public final class GraphStore {
         // `2026-06-10` to the imported journal file `2026_06_10.md`.
         let resolvedName = (try? cache.page(key: key))?.displayName ?? name
         let url = fileURL(forPageNamed: resolvedName)
-        let doc: PageDocument
+        var doc: PageDocument
         if FileManager.default.fileExists(atPath: url.path) {
             doc = Self.read(url: url, name: resolvedName,
                             isJournal: JournalDate(pageName: resolvedName) != nil)
+            try? cache.reuseIndexedIDs(in: &doc, stamp: Self.stamp(of: url))
         } else {
             // New page/stub. A journal stub canonicalizes to its ISO name, so a
             // freshly-created journal gets an ISO filename.
@@ -299,11 +315,21 @@ public final class GraphStore {
 
     public func isLoaded(_ name: String) -> Bool { loaded[PageName.key(name)] != nil }
 
+    public func numbering(onPageNamed name: String) throws -> OutlineNumbering.Snapshot {
+        let key = PageName.key(name)
+        guard let doc = loaded[key] else { return try cache.numberingSnapshot(onPageNamed: name) }
+        if let snapshot = loadedNumbering[key] { return snapshot }
+        let snapshot = OutlineNumbering.Snapshot(blocks: doc.blocks)
+        loadedNumbering[key] = snapshot
+        return snapshot
+    }
+
     /// Replaces the in-memory document (marks dirty). Call `savePage` to flush.
-    public func updatePage(_ doc: PageDocument) {
+    public func updatePage(_ doc: PageDocument, numberingChanged: Bool = true) {
         var d = doc
         d.isDirty = true
         loaded[d.nameKey] = d
+        if numberingChanged { loadedNumbering[d.nameKey] = nil }
         loadedRevisions[d.nameKey, default: 0] &+= 1
     }
 
@@ -375,6 +401,7 @@ public final class GraphStore {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
         loaded.removeValue(forKey: key)
+        loadedNumbering[key] = nil
         loadedRevisions.removeValue(forKey: key)
         pagePersistence.forget(pageKey: key)
         try cache.removePage(key: key)
@@ -467,6 +494,8 @@ public final class GraphStore {
         let oldURL = fileURL(forPageNamed: doc.name)
         let renamedRevision = loadedRevisions.removeValue(forKey: oldKey) ?? 0
         loaded.removeValue(forKey: oldKey)
+        loadedNumbering[oldKey] = nil
+        loadedNumbering[newKey] = nil
         pagePersistence.forget(pageKey: oldKey)
         doc.name = newName
         doc.isJournal = JournalDate(pageName: newName) != nil
@@ -564,6 +593,7 @@ public final class GraphStore {
             }
             let doc = Self.read(url: url, name: name, isJournal: isJournal)
             loaded[key] = doc
+            loadedNumbering[key] = nil
             loadedRevisions[key, default: 0] &+= 1
             // The file changed outside the app: whatever we last wrote is moot.
             pagePersistence.forget(pageKey: key)
@@ -573,6 +603,7 @@ public final class GraphStore {
         for listing in try cache.allPages() where listing.fileExists && !onDisk.contains(listing.nameKey) {
             try cache.removePage(key: listing.nameKey)
             loaded.removeValue(forKey: listing.nameKey)
+            loadedNumbering[listing.nameKey] = nil
             loadedRevisions.removeValue(forKey: listing.nameKey)
             affected.insert(listing.nameKey)
         }

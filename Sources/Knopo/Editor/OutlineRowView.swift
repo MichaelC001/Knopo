@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import KnopoCore
 
 /// Per-row callbacks supplied by the outline controller (captured by block id,
@@ -35,7 +36,9 @@ final class OutlineRowCell: NSTableCellView {
     static var indentPerDepth: CGFloat { (22 * BlockRenderer.zoom).rounded() }
     /// Space before a block's text, holding the fold chevron and bullet. Scales
     /// with zoom so the bullet-to-text gap grows with the text size.
-    static var gutterWidth: CGFloat { (34 * BlockRenderer.zoom).rounded() }
+    static var gutterWidth: CGFloat {
+        OutlineMarkerLayout.gutterWidth(slot: 0)
+    }
     static let trailingPad: CGFloat = 6
     /// Row top/bottom padding — the gap *between* blocks. Scales with the
     /// text-density control (View menu); 2 at 100%. The swing around that default
@@ -59,6 +62,7 @@ final class OutlineRowCell: NSTableCellView {
     var indentationAnimationViews: [NSView] { [foldButton, bullet, container] }
     private var blockColor: NSColor?
     private var depth = 0
+    private var markerGeometry: OutlineMarkerLayout.Geometry?
     private var isQuote = false
     private var isCode = false
     private var isEmbed = false
@@ -266,6 +270,25 @@ final class OutlineRowCell: NSTableCellView {
         bullet.isHidden = hidden
     }
 
+    func updateMarker(_ marker: OutlineNumbering.Marker?, geometry: OutlineMarkerLayout.Geometry,
+                      source: String) {
+        let height = BlockRenderer.lineHeight(forSource: source)
+        guard markerGeometry != geometry || bullet.label != marker?.label || firstLineHeight != height else { return }
+        markerGeometry = geometry
+        firstLineHeight = height
+        bullet.label = marker?.label
+        bullet.setAccessibilityElement(true)
+        bullet.setAccessibilityRole(.button)
+        if let marker {
+            bullet.setAccessibilityLabel(String(localized: "Item \(marker.label), zoom into block",
+                comment: "Accessible action for a numbered outline marker"))
+            bullet.isHidden = false
+        } else {
+            bullet.setAccessibilityLabel(L("Zoom into block"))
+        }
+        needsLayout = true
+    }
+
     /// Nearest text position for a point in this cell's coordinates — the row's
     /// dead space (the gutter beside the text, the padding above and below it)
     /// resolved to a real caret position. Nil while the row is focused: the
@@ -402,7 +425,8 @@ final class OutlineRowCell: NSTableCellView {
 
     override func layout() {
         super.layout()
-        let indent = CGFloat(depth) * Self.indentPerDepth
+        let indent = markerGeometry?.gutterOrigin ?? CGFloat(depth) * Self.indentPerDepth
+        let gutter = markerGeometry?.gutterWidth ?? Self.gutterWidth
         // Center the bullet/fold on the first line's vertical midpoint.
         let inset = renderedView.isHidden ? Self.contentInsetV : renderedView.textContainerInset.height
         let firstLineCenter = Self.verticalPadding + inset + firstLineHeight / 2
@@ -413,12 +437,20 @@ final class OutlineRowCell: NSTableCellView {
         foldButton.frame = NSRect(
             x: indent + (7 * z).rounded() - foldSize / 2, y: firstLineCenter - foldSize / 2,
             width: foldSize, height: foldSize)
-        let bulletBox = BulletView.dotDiameter() + 8
-        bullet.frame = NSRect(
-            x: indent + (22 * z).rounded() - bulletBox / 2, y: firstLineCenter - bulletBox / 2,
-            width: bulletBox, height: bulletBox)
+        if bullet.label != nil {
+            let font = OutlineMarkerLayout.font
+            let height = ceil(font.ascender - font.descender)
+            bullet.frame = NSRect(x: indent + (14 * z).rounded(), y: 0,
+                                  width: gutter - (14 * z).rounded() - OutlineMarkerLayout.gap, height: height)
+        } else {
+            let bulletBox = BulletView.dotDiameter() + 8
+            bullet.frame = NSRect(
+                x: indent + gutter - OutlineMarkerLayout.gap - OutlineMarkerLayout.bulletCenterOffset - bulletBox / 2,
+                y: firstLineCenter - bulletBox / 2,
+                width: bulletBox, height: bulletBox)
+        }
         bullet.needsDisplay = true
-        let contentX = indent + Self.gutterWidth
+        let contentX = indent + gutter
         container.frame = NSRect(
             x: contentX,
             y: Self.verticalPadding,
@@ -459,6 +491,22 @@ final class OutlineRowCell: NSTableCellView {
         } else {
             embedBackground.isHidden = true
         }
+        if bullet.label != nil {
+            bullet.frame.origin.y = firstBodyBaseline(fallback: Self.verticalPadding + inset
+                + BlockRenderer.firstBaselineOffset()) - OutlineMarkerLayout.font.ascender
+        }
+    }
+
+    private func firstBodyBaseline(fallback: CGFloat) -> CGFloat {
+        let text: NSTextView? = renderedView.isHidden
+            ? container.subviews.compactMap { $0 as? BlockEditorTextView }.first : renderedView
+        guard let text, let layout = text.textLayoutManager else { return fallback }
+        layout.ensureLayout(for: NSTextRange(location: layout.documentRange.location))
+        guard let fragment = layout.textLayoutFragment(for: layout.documentRange.location),
+              let line = fragment.textLineFragments.first else { return fallback }
+        let y = text.textContainerOrigin.y + fragment.layoutFragmentFrame.minY
+            + line.typographicBounds.minY + line.glyphOrigin.y
+        return convert(NSPoint(x: 0, y: y), from: text).y
     }
 
     /// Content width available at a given depth — the controller measures row
@@ -1389,6 +1437,8 @@ final class EmbedBackgroundView: NSView {
 /// the block menu. Collapsed blocks draw a halo.
 final class BulletView: NSView {
 
+    var label: String? { didSet { needsDisplay = true } }
+
     var isCollapsed = false {
         didSet { needsDisplay = true }
     }
@@ -1406,6 +1456,23 @@ final class BulletView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let label {
+            if isCollapsed {
+                NSColor.secondaryLabelColor.withAlphaComponent(0.16).setFill()
+                NSBezierPath(roundedRect: bounds.insetBy(dx: -2, dy: 0), xRadius: 3, yRadius: 3).fill()
+            }
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: OutlineMarkerLayout.font, .foregroundColor: NSColor.secondaryLabelColor]
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: label, attributes: attributes))
+            guard let context = NSGraphicsContext.current?.cgContext else { return }
+            context.saveGState()
+            context.textMatrix = .identity
+            context.textPosition = CGPoint(x: bounds.maxX - CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)),
+                                           y: bounds.height - OutlineMarkerLayout.font.ascender)
+            CTLineDraw(line, context)
+            context.restoreGState()
+            return
+        }
         let d = Self.dotDiameter()
         if isCollapsed {
             let halo = d + 6
@@ -1449,6 +1516,11 @@ final class BulletView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         onContextMenu(event)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick()
+        return true
     }
 
     override func resetCursorRects() {

@@ -29,11 +29,13 @@ struct BlockResultList: View {
                         // ancestors to nest and to share breadcrumbs.
                         let ancestors = (try? app.store.cache.breadcrumbs(
                             ofBlocks: group.value.map(\.blockID))) ?? [:]
+                        let numbering = SourceNumbering(app: app, page: group.key)
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(ResultRowLayout.layout(group.value, ancestors: ancestors),
+                            ForEach(ResultRowLayout.layout(group.value, ancestors: ancestors,
+                                                           markers: numbering.markers, widths: numbering.widths),
                                     id: \.hit.blockID) { row in
                                 ResultRow(row: row, editable: editable)
-                                    .padding(.leading, Self.levelIndent - ResultRow.bulletInset)
+                                    .padding(.leading, Self.levelIndent - ResultRowLayout.dotInset)
                             }
                         }
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -85,8 +87,7 @@ struct BlockResultList: View {
     }
 
     /// The source block a result row shows. The row's id comes from the index.
-    /// A block without a saved `id::` gets a fresh id each time its page loads,
-    /// so the id is resolved through the store, not looked up directly.
+    /// The store handles both matching indexed IDs and stale result IDs.
     static func sourceBlock(_ app: AppState, _ id: UUID) -> (pageName: String, block: Block)? {
         app.store.resolveBlock(id)
     }
@@ -135,12 +136,27 @@ struct ResultRowLayout: Equatable {
     /// Ancestors below that row, or below the page when there is none. Empty
     /// when the row above at the same level already shows the same path.
     let breadcrumb: [BreadcrumbItem]
+    var marker: OutlineNumbering.Marker? = nil
+    var markerWidth: CGFloat = 0
+    var indent: CGFloat = 0
+
+    static var bulletSize: CGFloat { 5 * BlockRenderer.zoom }
+    /// Padding around the shared marker slot keeps its full width clickable.
+    static var markerInset: CGFloat { 6.5 * BlockRenderer.zoom }
+    static var dotInset: CGFloat {
+        markerInset + OutlineMarkerLayout.minimumSlot - OutlineMarkerLayout.bulletCenterOffset - bulletSize / 2
+    }
+    static func gutterWidth(slot: CGFloat) -> CGFloat {
+        max(OutlineMarkerLayout.minimumSlot, slot) + 2 * markerInset
+    }
 
     /// `hits` must be in document order, so an ancestor row comes first.
     static func layout(
-        _ hits: [BacklinkHit], ancestors: [UUID: [BreadcrumbItem]]
+        _ hits: [BacklinkHit], ancestors: [UUID: [BreadcrumbItem]],
+        markers: [UUID: OutlineNumbering.Marker] = [:], widths: [UUID: CGFloat] = [:]
     ) -> [ResultRowLayout] {
         var depthOf: [UUID: Int] = [:]
+        var contentX: [UUID: CGFloat] = [:]
         // The last path shown at each depth, with the row it hangs under.
         var shown: [Int: (parent: UUID?, path: [UUID])] = [:]
         var rows: [ResultRowLayout] = []
@@ -155,7 +171,15 @@ struct ResultRowLayout: Equatable {
             let repeats = shown[depth].map { $0.parent == parent && $0.path == below.map(\.id) } ?? false
             shown[depth] = (parent, below.map(\.id))
             depthOf[hit.blockID] = depth
-            rows.append(ResultRowLayout(hit: hit, depth: depth, breadcrumb: repeats ? [] : below))
+            let marker = markers[hit.blockID]
+            let slot = max(OutlineMarkerLayout.minimumSlot,
+                widths[hit.blockID] ?? marker.flatMap { widths[$0.runID] } ?? 0)
+            let indent = parent.flatMap { contentX[$0] }.map {
+                $0 + OutlineRowCell.indentPerDepth - gutterWidth(slot: 0)
+            } ?? 0
+            contentX[hit.blockID] = indent + gutterWidth(slot: slot)
+            rows.append(ResultRowLayout(hit: hit, depth: depth, breadcrumb: repeats ? [] : below,
+                                        marker: marker, markerWidth: slot, indent: indent))
         }
         return rows
     }
@@ -176,17 +200,13 @@ struct ResultRow: View {
     @FocusState private var fieldFocused: Bool
 
     private var hit: BacklinkHit { row.hit }
-    private static var bulletWidth: CGFloat { 18 * BlockRenderer.zoom }
-    private static var bulletSize: CGFloat { 5 * BlockRenderer.zoom }
-    /// Space left of the bullet dot inside its click target.
-    static var bulletInset: CGFloat { (bulletWidth - bulletSize) / 2 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !row.breadcrumb.isEmpty {
                 // Starts at the bullet, so the block reads as under its path.
                 breadcrumbBar
-                    .padding(.leading, Self.bulletInset)
+                    .padding(.leading, ResultRowLayout.dotInset)
                     .padding(.top, 4 * BlockRenderer.zoom)
             }
             HStack(alignment: .top, spacing: 0) {
@@ -202,7 +222,7 @@ struct ResultRow: View {
             }
         }
         .padding(.trailing, 4)
-        .padding(.leading, CGFloat(row.depth) * OutlineRowCell.indentPerDepth)
+        .padding(.leading, row.indent)
         .background(RoundedRectangle(cornerRadius: 5)
             .fill(Color.primary.opacity(hovering ? 0.05 : 0)))
         .onHover { hovering = $0 }
@@ -252,12 +272,26 @@ struct ResultRow: View {
     /// which block that is.
     private var bullet: some View {
         Button { openBlock(inSidebar: wantsSidebarClick()) } label: {
-            Circle()
+            if let marker = row.marker {
+                Text(verbatim: marker.label)
+                    .font(Font(OutlineMarkerLayout.font))
+                    .foregroundStyle(.secondary)
+                    .frame(width: row.markerWidth, alignment: .trailing)
+                    .padding(.horizontal, ResultRowLayout.markerInset)
+                    .frame(height: BlockRenderer.lineHeight(forSource: ""))
+                    .contentShape(Rectangle())
+                    .accessibilityLabel(Text(String(localized: "Item \(marker.label), go to block",
+                        comment: "Accessible action for a numbered result marker")))
+            } else {
+                Circle()
                 .fill(Color.secondary.opacity(hovering ? 0.9 : 0.5))
-                .frame(width: Self.bulletSize, height: Self.bulletSize)
-                .frame(width: Self.bulletWidth,
-                       height: BlockRenderer.lineHeight(forSource: ""))
+                .frame(width: ResultRowLayout.bulletSize, height: ResultRowLayout.bulletSize)
+                .offset(x: ResultRowLayout.bulletSize / 2 - OutlineMarkerLayout.bulletCenterOffset)
+                .frame(width: max(OutlineMarkerLayout.minimumSlot, row.markerWidth), alignment: .trailing)
+                .padding(.horizontal, ResultRowLayout.markerInset)
+                .frame(height: BlockRenderer.lineHeight(forSource: ""))
                 .contentShape(Rectangle())
+            }
         }
         .buttonStyle(.plain)
         .padding(.top, OutlineRowCell.contentInsetV)

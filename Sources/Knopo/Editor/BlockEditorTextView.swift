@@ -25,6 +25,11 @@ protocol BlockEditorActions: AnyObject {
     func editorImportAssets(_ fileURLs: [URL]) -> String?
     func editorImportPastedImage(png data: Data) -> String?
     func editorFocusLost()
+    func editorNumberedShortcut()
+}
+
+extension BlockEditorActions {
+    func editorNumberedShortcut() {}
 }
 
 /// The single shared NSTextView (TextKit 2) that moves into the focused row —
@@ -59,6 +64,8 @@ final class BlockEditorTextView: NSTextView {
     var pendingTrailingSpaceCaret: Int?
 
     private var isSettingContent = false
+    private var isDirectTyping = false
+    private var numberedTypingPrefix = false
 
     /// Proportional, matching the rendered rows — the focused block shows raw
     /// Markdown source, but it shouldn't feel like a different document.
@@ -275,6 +282,7 @@ final class BlockEditorTextView: NSTextView {
 
     func setContent(_ text: String) {
         pendingTrailingSpaceCaret = nil // editor reused for another block
+        numberedTypingPrefix = false
         guard string != text else {
             applyHighlighting()
             invalidateHintIfNeeded()
@@ -300,6 +308,14 @@ final class BlockEditorTextView: NSTextView {
 
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let sel = selectedRange()
+        let numberedShortcut = numberedTypingPrefix && isDirectTyping && !hasMarkedText() && string == "1."
+            && sel == NSRange(location: 2, length: 0) && (insertString as? String) == " "
+            && (replacementRange.location == NSNotFound || replacementRange == sel)
+        let directInsertion = isDirectTyping && !hasMarkedText() && sel.length == 0
+            && (replacementRange.location == NSNotFound || replacementRange == sel)
+        numberedTypingPrefix = directInsertion && (
+            (string.isEmpty && sel.location == 0 && (insertString as? String) == "1")
+                || (numberedTypingPrefix && string == "1" && sel.location == 1 && (insertString as? String) == "."))
         if sel.length > 0, !hasMarkedText(),
            let typed = insertString as? String, let close = Self.wrapMarkers[typed],
            // Not inside a fenced code block: there these markers are literal
@@ -314,6 +330,7 @@ final class BlockEditorTextView: NSTextView {
             return
         }
         super.insertText(insertString, replacementRange: replacementRange)
+        if numberedShortcut, string == "1. " { actions?.editorNumberedShortcut() }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -326,6 +343,8 @@ final class BlockEditorTextView: NSTextView {
         let pendingSpaceCaret = pendingTrailingSpaceCaret
         pendingTrailingSpaceCaret = nil
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        isDirectTyping = flags.isSubset(of: [.shift, .capsLock, .numericPad])
+        defer { isDirectTyping = false }
         // Keep the completion's space before a word, but remove it before
         // closing punctuation. The normal key handler then inserts the mark.
         if let spaceCaret = pendingSpaceCaret,

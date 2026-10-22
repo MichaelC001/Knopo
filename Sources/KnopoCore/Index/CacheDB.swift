@@ -77,6 +77,7 @@ public final class CacheDB: @unchecked Sendable {
         /// rewriting them dirties three times the pages the text itself does.
         var facetDigest: Data
         var ftsRowID: Int64
+        var numbered: Bool
     }
 
     /// What a page's rows were last built from, so indexing it again can touch
@@ -104,6 +105,36 @@ public final class CacheDB: @unchecked Sendable {
     private var skeletons: [String: PageSkeleton] = [:]
     private var skeletonOrder: [String] = []
     private let skeletonLimit = 8
+    private let numberingLock = NSLock()
+    private var numberingSnapshots: [String: OutlineNumbering.Snapshot] = [:]
+    private var numberingOrder: [String] = []
+    private var numberingReads = 0
+
+    public var numberingReadCount: Int {
+        numberingLock.lock()
+        defer { numberingLock.unlock() }
+        return numberingReads
+    }
+
+    private func invalidateNumbering(_ key: String) {
+        numberingLock.lock()
+        defer { numberingLock.unlock() }
+        numberingSnapshots[key] = nil
+        numberingOrder.removeAll { $0 == key }
+    }
+
+    public func numberingSnapshot(onPageNamed name: String) throws -> OutlineNumbering.Snapshot {
+        let key = PageName.key(name)
+        numberingLock.lock()
+        defer { numberingLock.unlock() }
+        if let snapshot = numberingSnapshots[key] { return snapshot }
+        let snapshot = OutlineNumbering.Snapshot(blocks: try numberingOutline(onPageNamed: name))
+        numberingReads += 1
+        numberingSnapshots[key] = snapshot
+        numberingOrder.append(key)
+        if numberingOrder.count > 128 { numberingSnapshots[numberingOrder.removeFirst()] = nil }
+        return snapshot
+    }
 
     /// How each page index resolved, so the cheap path can be asserted on and
     /// measured rather than assumed.
@@ -132,11 +163,12 @@ public final class CacheDB: @unchecked Sendable {
     private let refCacheLimit = 10_000
 
     /// Bumped whenever the *indexing logic* changes (not the schema) so an
-    /// existing cache, whose rows were derived by older code, is force-rebuilt
-    /// on next open. v2: recognize Logseq `yyyy_MM_dd` journal filenames.
+    /// existing cache is repaired on next open.
+    /// v2: recognize Logseq `yyyy_MM_dd` journal filenames.
     /// v3: canonicalize date page keys to ISO (cross-spelling journal refs).
     /// v6: recognize the friendly date form `Jun 10th, 2026` as a journal day.
-    public static let indexVersion: Int = 6
+    /// v7: parse CRLF files into individual lines and blocks.
+    public static let indexVersion: Int = 7
 
     /// The index version this cache was last built with (PRAGMA user_version,
     /// independent of the schema migrator). 0 on a fresh/old database.
@@ -324,7 +356,7 @@ public final class CacheDB: @unchecked Sendable {
     /// The full rebuild is a delete-and-reinsert of every row for the page: about
     /// 1.6 MB of database writes for a 3000-block page, per keystroke at a typing
     /// cadence that outruns the save debounce.
-    public func indexPage(_ page: PageDocument, stamp: FileStamp?) throws {
+    public func indexPage(_ page: PageDocument, stamp: FileStamp?, force: Bool = false) throws {
         let key = page.nameKey
         let plan = Self.flatten(page)
         let preambleDigest = Self.digest(properties: page.preambleProperties)
@@ -333,7 +365,7 @@ public final class CacheDB: @unchecked Sendable {
         var rewritten = 0
         do {
             try dbQueue.write { db in
-                if let previous, previous.matches(plan) {
+                if !force, let previous, previous.matches(plan) {
                     let changed = zip(previous.entries, plan).reduce(into: 0) {
                         if $1.0.digest != $1.1.digest { $0 += 1 }
                     }
@@ -355,6 +387,9 @@ public final class CacheDB: @unchecked Sendable {
             throw error
         }
         setSkeleton(built, forPageKey: key)
+        if previous?.matches(plan) != true || zip(previous?.entries ?? [], plan).contains(where: {
+            $0.numbered != Block(properties: $1.properties).isNumbered
+        }) { invalidateNumbering(key) }
     }
 
     /// Preorder walk — parent, then its subtree, then the next sibling — which is
@@ -488,6 +523,7 @@ public final class CacheDB: @unchecked Sendable {
             }
             updated.entries[index].digest = flat.digest
             updated.entries[index].ftsRowID = ftsRowID
+            updated.entries[index].numbered = Block(properties: flat.properties).isNumbered
         }
         if updated.preambleDigest != preambleDigest {
             try db.execute(sql: "DELETE FROM page_props WHERE page_key = ?", arguments: [key])
@@ -630,7 +666,7 @@ public final class CacheDB: @unchecked Sendable {
                 id: flat.id, parent: flat.parent, depth: flat.depth,
                 digest: flat.digest,
                 facetDigest: Self.facetDigest(refs: refs, properties: flat.properties),
-                ftsRowID: db.lastInsertedRowID))
+                ftsRowID: db.lastInsertedRowID, numbered: Block(properties: flat.properties).isNumbered))
             try statements.insertFacets(
                 refs: refs, properties: flat.properties, blockID: bid, pageKey: key)
         }
@@ -671,6 +707,8 @@ public final class CacheDB: @unchecked Sendable {
             try Self.deletePageRows(db, key: key)
             try db.execute(sql: "DELETE FROM recents WHERE page_key = ?", arguments: [key])
         }
+        setSkeleton(nil, forPageKey: key)
+        invalidateNumbering(key)
     }
 
     private static func deletePageRows(_ db: Database, key: String) throws {
@@ -718,6 +756,23 @@ public final class CacheDB: @unchecked Sendable {
         try dbQueue.write { db in
             for table in ["pages", "blocks", "blocks_fts", "page_refs", "block_refs", "tags", "props", "page_props"] {
                 try db.execute(sql: "DELETE FROM \(table)")
+            }
+        }
+        skeletonLock.lock()
+        skeletons.removeAll()
+        skeletonOrder.removeAll()
+        skeletonLock.unlock()
+        numberingLock.lock()
+        numberingSnapshots.removeAll()
+        numberingOrder.removeAll()
+        numberingLock.unlock()
+    }
+
+    /// A forced rebuild must also remove rows whose owning page is missing.
+    func removeOrphanedRows() throws {
+        try dbQueue.write { db in
+            for table in ["blocks", "blocks_fts", "page_refs", "block_refs", "tags", "props", "page_props"] {
+                try db.execute(sql: "DELETE FROM \(table) WHERE page_key NOT IN (SELECT name_key FROM pages)")
             }
         }
     }
@@ -1217,6 +1272,72 @@ public final class CacheDB: @unchecked Sendable {
                 sql: "SELECT position FROM blocks WHERE id = ?",
                 arguments: [id.uuidString.lowercased()]
             )
+        }
+    }
+
+    /// Reuses volatile IDs only while the file and parsed block sequence match the index.
+    /// Called when loading or reindexing a file, before any live structural edits.
+    func reuseIndexedIDs(in page: inout PageDocument, stamp: FileStamp?) throws {
+        guard let stamp else { return }
+        let rows: [Row] = try dbQueue.read { db in
+            guard let row = try Row.fetchOne(db,
+                sql: "SELECT file_mtime, file_size FROM pages WHERE name_key = ?",
+                arguments: [page.nameKey]),
+                let mtime: Double = row["file_mtime"], let size: Int = row["file_size"],
+                stamp == FileStamp(mtime: mtime, size: size) else { return [] }
+            return try Row.fetchAll(db,
+                sql: "SELECT id, content, depth FROM blocks WHERE page_key = ? ORDER BY position",
+                arguments: [page.nameKey])
+        }
+        let flat = page.blocks.flattened
+        guard flat.count == rows.count, zip(flat, rows).allSatisfy({
+            $0.content == $1["content"] && $0.raw?.depth == $1["depth"]
+        }) else { return }
+        var position = 0
+        func restore(_ blocks: inout [Block]) {
+            for i in blocks.indices {
+                let block = blocks[i]
+                let id = UUID(uuidString: rows[position]["id"])
+                position += 1
+                if !block.idPersisted, let id {
+                    blocks[i] = Block(id: id, content: block.content, children: block.children,
+                        collapsed: block.collapsed, idPersisted: false,
+                        properties: block.properties, raw: block.raw)
+                }
+                restore(&blocks[i].children)
+            }
+        }
+        restore(&page.blocks)
+    }
+
+    /// Only structure and numbering metadata. Result views need no file reads.
+    public func numberingOutline(onPageNamed name: String) throws -> [Block] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT b.id, b.parent_id, p.key, p.value FROM blocks b
+                LEFT JOIN props p ON p.block_id = b.id
+                    AND p.key IN ('knopo.list-type', 'logseq.order-list-type')
+                WHERE b.page_key = ? ORDER BY b.position
+                """, arguments: [PageName.key(name)])
+            var roots: [UUID] = []
+            var children: [UUID: [UUID]] = [:]
+            var properties: [UUID: [BlockProperty]] = [:]
+            for row in rows {
+                guard let id = UUID(uuidString: row["id"]) else { continue }
+                if properties[id] == nil {
+                    properties[id] = []
+                    if let parent: String = row["parent_id"], let parentID = UUID(uuidString: parent) {
+                        children[parentID, default: []].append(id)
+                    } else { roots.append(id) }
+                }
+                if let key: String = row["key"], let value: String = row["value"] {
+                    properties[id, default: []].append(BlockProperty(key: key, value: value))
+                }
+            }
+            func build(_ id: UUID) -> Block {
+                Block(id: id, children: (children[id] ?? []).map(build), properties: properties[id] ?? [])
+            }
+            return roots.map(build)
         }
     }
 

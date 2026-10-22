@@ -62,6 +62,7 @@ enum BlockRenderer {
         /// Reference lists show a heading at body size, bold, so one heading
         /// block does not outweigh the list around it.
         var compactHeadings = false
+        var generatedRegionOnNewLine = false
 
         init(resolveBlockRef: @escaping (UUID) -> String? = { _ in nil },
              assetsDir: URL? = nil,
@@ -1232,7 +1233,7 @@ enum BlockRenderer {
                 // Read-only transclusion of a subtree/page (§7.6). The host
                 // block stays editable; this is the rendered (unfocused) form.
                 if let rendered = context.resolveEmbed(target) {
-                    if out.length > 0 {
+                    if out.length > 0 || context.generatedRegionOnNewLine {
                         out.append(NSAttributedString(string: "\n", attributes: attrs()))
                     }
                     out.append(rendered)
@@ -1255,7 +1256,7 @@ enum BlockRenderer {
                 // Read-only query whose results render in place (§17). The host
                 // block stays editable; this is the rendered (unfocused) form.
                 if let rendered = context.resolveQuery(expr) {
-                    if out.length > 0 {
+                    if out.length > 0 || context.generatedRegionOnNewLine {
                         out.append(NSAttributedString(string: "\n", attributes: attrs()))
                     }
                     out.append(rendered)
