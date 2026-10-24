@@ -56,16 +56,11 @@ struct MainWindow: View {
                             .frame(maxHeight: .infinity)
                     }
                 }
+                .documentToolbarBackground(topInset: geo.safeAreaInsets.top)
             }
-            // Frost keeps the glassless graph title legible.
-            .toolbarScrollEdgeEffect()
         }
         .background(SidebarTransition.WindowAttachment(state: sidebarTransition,
                                                        preferences: app.preferences))
-        // A visible window-toolbar background gives the tab bar a proper opaque
-        // strip, so the system "+" button is centered in it rather than
-        // floating (asymmetrically clipped) over the content.
-        .toolbarBackground(.visible, for: .windowToolbar)
         // Native-style Back/Forward in the toolbar's leading navigation area
         // (like Finder/Safari), mirroring the ⌘[ / ⌘] commands.
         .toolbar {
@@ -167,11 +162,20 @@ struct MainWindow: View {
 
 private extension View {
     @ViewBuilder
-    func toolbarScrollEdgeEffect() -> some View {
+    func documentToolbarBackground(topInset: CGFloat) -> some View {
         if #available(macOS 26.0, *) {
-            scrollEdgeEffectStyle(.hard, for: .top)
+            // Frost the document columns without covering the navigation sidebar.
+            overlay(alignment: .top) {
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .frame(height: topInset)
+                    .offset(y: -topInset)
+                    .allowsHitTesting(false)
+            }
+            .toolbarBackground(.hidden, for: .windowToolbar)
         } else {
-            self
+            // Keep the native tab strip and its "+" button on older systems.
+            toolbarBackground(.visible, for: .windowToolbar)
         }
     }
 }
