@@ -166,8 +166,7 @@ private extension View {
         if #available(macOS 26.0, *) {
             // Frost the document columns without covering the navigation sidebar.
             overlay(alignment: .top) {
-                Rectangle()
-                    .fill(.regularMaterial)
+                ToolbarFrost()
                     .frame(height: topInset)
                     .offset(y: -topInset)
                     .allowsHitTesting(false)
@@ -177,6 +176,44 @@ private extension View {
             // Keep the native tab strip and its "+" button on older systems.
             toolbarBackground(.visible, for: .windowToolbar)
         }
+    }
+}
+
+/// Native tabs provide their own material. Keep the toolbar frost above them.
+private struct ToolbarFrost: NSViewRepresentable {
+    func makeNSView(context: Context) -> ToolbarFrostView { ToolbarFrostView() }
+
+    func updateNSView(_ view: ToolbarFrostView, context: Context) {
+        view.needsLayout = true
+    }
+}
+
+final class ToolbarFrostView: NSView {
+    private let frost = NSHostingView(rootView: Rectangle().fill(.bar))
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        frost.safeAreaRegions = []
+        addSubview(frost)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        // Showing or hiding tabs resizes this view through the top safe-area inset.
+        // AppKit includes the tab row among its bottom titlebar accessories.
+        let accessoryHeight = window?.titlebarAccessoryViewControllers
+            .filter { $0.layoutAttribute == .bottom && !$0.isHidden }
+            .reduce(CGFloat.zero) { $0 + $1.view.frame.height } ?? 0
+        let inset = min(bounds.height, max(0, accessoryHeight))
+        frost.frame = NSRect(x: bounds.minX, y: bounds.minY + inset,
+                             width: bounds.width, height: bounds.height - inset)
     }
 }
 

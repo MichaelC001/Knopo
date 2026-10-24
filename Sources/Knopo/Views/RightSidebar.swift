@@ -100,13 +100,14 @@ struct RightSidebar: View {
         .background(
             RoundedRectangle(cornerRadius: cardCorner, style: .continuous)
                 .fill(Self.cardColor)
-                // A soft, diffuse shadow carries the elevation; the border is
-                // just a whisper so it doesn't read as a hard outline.
-                .shadow(color: .black.opacity(0.10), radius: 4, y: 1.5)
+                // Use a lighter, broader shadow on 26 to soften the card edge.
+                .shadow(color: .black.opacity(Self.isMacOS26OrLater ? 0.06 : 0.10),
+                        radius: Self.isMacOS26OrLater ? 6 : 4,
+                        y: Self.isMacOS26OrLater ? 1 : 1.5)
         )
         .overlay(
             RoundedRectangle(cornerRadius: cardCorner, style: .continuous)
-                .strokeBorder(Self.cardBorder, lineWidth: 1)
+                .strokeBorder(Self.cardBorder, lineWidth: Self.isMacOS26OrLater ? 0.5 : 1)
         )
     }
 
@@ -262,10 +263,9 @@ struct RightSidebar: View {
         dark: NSColor(white: 0.21, alpha: 1)))     // clearly above the column
 
     static let cardBorder = Color(nsColor: .dynamic(
-        // 26's cards wear a thin, luminous hairline: a softer, cooler rim in
-        // dark; light keeps its faint hairline.
-        light: NSColor.separatorColor.withAlphaComponent(isMacOS26OrLater ? 0.12 : 0.25),
-        dark: NSColor(white: 1, alpha: isMacOS26OrLater ? 0.10 : 0.14)))
+        // Keep a faint edge on 26; retain the stronger outline on 15.
+        light: NSColor.separatorColor.withAlphaComponent(isMacOS26OrLater ? 0.05 : 0.25),
+        dark: NSColor(white: 1, alpha: isMacOS26OrLater ? 0.05 : 0.14)))
 }
 
 extension NSColor {
