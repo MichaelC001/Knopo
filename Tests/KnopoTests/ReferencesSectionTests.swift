@@ -113,6 +113,8 @@ import Testing
             : ["Heading with Target and Other", "Plain Target"]
         #expect(views.map(\.string) == expected)
         let heading = try #require(views.first)
+        #expect(heading.hoverHint != nil)
+        #expect(heading.accessibilityHelp() == heading.hoverHint)
         // A heading row is bold at body size, not heading size.
         let font = try #require(heading.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
         #expect(font.pointSize == BlockRenderer.baseFontSize)
@@ -202,6 +204,7 @@ import Testing
 
         let view = try #require(descendants(host, of: RenderedTextView.self).first)
         #expect(!view.allowsImageResize)
+        #expect(view.hoverHint == nil)
         let font = try #require(view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
         #expect(font.pointSize == BlockRenderer.baseFontSize)
         // A plain click on text opens the block. Cmd-click opens it in the sidebar.

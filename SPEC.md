@@ -405,9 +405,10 @@ Every page (including journal pages and stubs) shows below its content:
 ### 9.1 Linked References
 
 - All blocks anywhere in the graph whose content contains `[[This Page]]`, plus blocks containing a `((ref))` to one of this page's blocks (§7.5).
-- Grouped by source page; each block rendered with its breadcrumb (page › ancestor blocks) and **editable in place** — edits write through to the source page.
+- Grouped by source page; each block rendered with its breadcrumb (page › ancestor blocks) and **editable in place**. Double-click plain text to edit; edits write through to the source page. A single click on plain text has no action.
 - Journal groups come first, newest to oldest, followed by other pages alphabetically. Blocks within a group follow document order.
-- The section and each group collapse with their chevron; a group's page name opens the page. Each breadcrumb entry opens its block. A block's bullet opens the block, and hovering a row highlights it. `Cmd+Click` or `Shift+Click` opens any of these in the right sidebar.
+- The section and each group collapse with their chevron; a group's page name opens the page. Each breadcrumb entry opens its block. A block's bullet or number opens the block, and hovering a row highlights it. `Cmd+Click` or `Shift+Click` on the block's plain text, bullet, or number opens the block in the right sidebar. These modifiers also open page names, breadcrumbs, and inline links in the right sidebar.
+- Separate hover hints explain editing over plain text and navigation over the bullet or number. Hints appear after the pointer rests for 350 ms and dismiss when the pointer leaves, on clicks, typing, scrolling, or when the window loses focus.
 - A block whose ancestor is also a result is nested under that result. A breadcrumb already shown for the row above at the same level is not repeated.
 - Headings show at body size, bold. Links in a block work as they do in the outline. All text in the section follows content zoom (`Cmd +/-`).
 - A block matches if the reference appears in the block itself; ancestors/descendants of matching blocks are shown as context (one level of children, collapsed) but don't count toward the match total.

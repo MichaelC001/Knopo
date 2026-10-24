@@ -663,6 +663,7 @@ final class RenderedTextView: NSTextView {
     var onSelectRequest: (_ extend: Bool, _ toggle: Bool) -> Void = { _, _ in }
     var onHoverRef: (HoverRef, NSRect) -> Void = { _, _ in }
     var onHoverEnded: () -> Void = {}
+    var hoverHint: String?
     /// What the pointer is resting on: both get a preview.
     enum HoverRef: Equatable {
         case page(String)
@@ -1293,6 +1294,12 @@ final class RenderedTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         let handle = imageHandle(at: point)
         let hoveredImage = allowsImageResize ? handle ?? image(at: point) : nil
+        let link = linkValue(at: point)
+        if let hoverHint, link == nil, handle == nil, image(at: point) == nil {
+            HoverHint.shared.schedule(hoverHint, for: self)
+        } else {
+            HoverHint.shared.dismiss(for: self)
+        }
         if hoverImageIndex != hoveredImage?.index {
             hoverImageIndex = hoveredImage?.index
             updateResizeOverlay(hoverFrame: hoveredImage?.frame, preview: nil)
@@ -1309,7 +1316,6 @@ final class RenderedTextView: NSTextView {
             onHoverEnded()
             return
         }
-        let link = linkValue(at: point)
         if link != nil { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
         // External links keep the URL tooltip AppKit would have shown.
         // `knopo://` ones get none.
@@ -1334,6 +1340,7 @@ final class RenderedTextView: NSTextView {
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
+        HoverHint.shared.dismiss(for: self)
         toolTip = nil
         hoverImageIndex = nil
         updateResizeOverlay(hoverFrame: nil, preview: nil)

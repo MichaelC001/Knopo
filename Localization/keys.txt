@@ -53,7 +53,7 @@ Delete Page…
 Delete “%@”?	Confirmation title; the placeholder is the page name
 Delete…
 Done
-Double-click to edit in place; click links to navigate
+Double-click to edit here. Click the bullet or number to open this block.
 Enter a date format.	Custom journal date pattern: the field is blank
 Enter a new name for #%@.	Rename-tag prompt; placeholder is the tag name
 Enter a new name for “%@”.	Rename-page prompt; placeholder is the page name
@@ -67,7 +67,6 @@ Find Previous
 Find in Page
 Find in page	Find bar search field placeholder
 Forward
-Go to block
 Graph Settings
 Graph Settings Error
 Graph Settings for %@
@@ -114,6 +113,7 @@ Open day page (shows linked references)
 Open in Default App
 Open in Main View
 Open in Sidebar
+Open this block. ⌘-click or Shift-click to open in the right sidebar.
 Orange	Block background color
 Page name
 Paste

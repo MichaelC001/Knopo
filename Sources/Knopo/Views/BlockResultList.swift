@@ -213,9 +213,6 @@ struct ResultRow: View {
                 bullet
                 if editing {
                     editField
-                } else if editable {
-                    content
-                        .help("Double-click to edit in place; click links to navigate")
                 } else {
                     content
                 }
@@ -237,6 +234,7 @@ struct ResultRow: View {
                 BlockResultList.resizeImage(app, block: hit.blockID,
                                             imageIndex: index, width: width)
             } : nil,
+            hoverHint: editable ? L("Double-click to edit here. Click the bullet or number to open this block.") : nil,
             onClick: { clickCount, sidebar in
                 // Cmd/Shift-click opens the block in the sidebar, in any row.
                 if sidebar {
@@ -295,7 +293,7 @@ struct ResultRow: View {
         }
         .buttonStyle(.plain)
         .padding(.top, OutlineRowCell.contentInsetV)
-        .help("Go to block")
+        .hoverHint(L("Open this block. ⌘-click or Shift-click to open in the right sidebar."))
     }
 
     /// Each ancestor opens its own block.
@@ -362,6 +360,7 @@ struct ResultBlockText: NSViewRepresentable {
     var onLink: (URL, Bool) -> Void
     /// Nil turns image resize handles off. Without it a handle would do nothing.
     var onImageResize: ((_ imageIndex: Int, _ width: CGFloat) -> Void)?
+    var hoverHint: String? = nil
     /// A click on plain text: its click count, and whether Cmd or Shift asks
     /// for the sidebar.
     var onClick: ((_ clickCount: Int, _ sidebar: Bool) -> Void)?
@@ -379,11 +378,17 @@ struct ResultBlockText: NSViewRepresentable {
         view.onLinkClick = onLink
         view.allowsImageResize = onImageResize != nil
         view.onImageResize = onImageResize ?? { _, _ in }
+        view.hoverHint = hoverHint
+        view.setAccessibilityHelp(hoverHint)
         let onClick = onClick
         view.onFocusRequest = { _ in onClick?(NSApp?.currentEvent?.clickCount ?? 1, false) }
         // The text view sends Cmd/Shift-clicks here, meant for node selection.
         // A result list selects nothing, so they open the sidebar.
         view.onSelectRequest = { _, _ in onClick?(1, true) }
+    }
+
+    static func dismantleNSView(_ view: RenderedTextView, coordinator: ()) {
+        HoverHint.shared.dismiss(for: view)
     }
 
     func sizeThatFits(
