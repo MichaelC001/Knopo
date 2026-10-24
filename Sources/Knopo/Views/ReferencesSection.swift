@@ -42,32 +42,33 @@ struct ReferencesSection: View {
     /// Both section headers sit at the same level. Their contents sit one
     /// level in, so the two read as peers.
     private func sectionHeader(
-        _ title: LocalizedStringKey, expanded: Bool, count: Int?, fill: Color,
+        _ title: LocalizedStringKey, expanded: Bool, count: Int?,
         toggle: @escaping () -> Void
     ) -> some View {
         Button(action: toggle) {
             HStack(spacing: 4 * BlockRenderer.zoom) {
                 ResultChevron(expanded: expanded)
                 sectionTitle(title)
-                if let count { countBadge(count, fill: fill).padding(.leading, 2) }
+                if let count { countBadge(count).padding(.leading, 2) }
             }
         }
         .buttonStyle(.plain)
     }
 
-    private func countBadge(_ count: Int, fill: Color) -> some View {
+    private func countBadge(_ count: Int) -> some View {
         Text(verbatim: "\(count)")   // a number, not a key
             .font(.system(size: BlockRenderer.baseFontSize * 0.8))
             .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(Capsule().fill(fill))
+            .background(Capsule().fill(Color.secondary.opacity(0.15)))
     }
 
     // MARK: - Linked (SPEC §9.1)
 
     @ViewBuilder
     private func linkedSection(_ hits: [BacklinkHit]) -> some View {
-        sectionHeader("Linked References", expanded: linkedExpanded, count: hits.count,
-                      fill: Color.accentColor.opacity(0.2)) { linkedExpanded.toggle() }
+        sectionHeader("Linked References", expanded: linkedExpanded, count: hits.count) {
+            linkedExpanded.toggle()
+        }
         if linkedExpanded {
             BlockResultList(
                 groups: PageGroupOrder.sorted(Dictionary(grouping: hits, by: \.pageDisplayName)),
@@ -87,8 +88,7 @@ struct ReferencesSection: View {
             : []
 
         sectionHeader("Unlinked References", expanded: unlinkedExpanded,
-                      count: unlinkedExpanded ? hits.count : nil,
-                      fill: Color.secondary.opacity(0.15)) { unlinkedExpanded.toggle() }
+                      count: unlinkedExpanded ? hits.count : nil) { unlinkedExpanded.toggle() }
 
         if unlinkedExpanded {
             if hits.isEmpty {
