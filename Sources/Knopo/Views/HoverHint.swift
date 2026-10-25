@@ -13,6 +13,13 @@ final class HoverHint {
     private(set) var panel: NSPanel?
     private var eventMonitor: Any?
     private var windowObserver: NSObjectProtocol?
+    private let scheduleWork: (TimeInterval, DispatchWorkItem) -> Void
+
+    init(scheduleWork: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }) {
+        self.scheduleWork = scheduleWork
+    }
 
     func schedule(_ text: String, for view: NSView) {
         guard view.window?.isKeyWindow == true else { return }
@@ -45,7 +52,7 @@ final class HoverHint {
             self.show(text, from: view)
         }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.delay, execute: work)
+        scheduleWork(Self.delay, work)
     }
 
     func dismiss(for view: NSView) {

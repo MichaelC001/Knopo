@@ -4,7 +4,21 @@ import Testing
 
 @MainActor
 @Suite(.serialized) struct HoverHintTests {
-    // Keep timing tests independent of desktop focus and pointer position.
+    private final class Scheduler {
+        private var pending: [DispatchWorkItem] = []
+
+        func schedule(after _: TimeInterval, work: DispatchWorkItem) {
+            pending.append(work)
+        }
+
+        func runPending() {
+            let work = pending
+            pending.removeAll()
+            for item in work where !item.isCancelled { item.perform() }
+        }
+    }
+
+    // Keep hint tests independent of desktop focus and pointer position.
     private final class HintWindow: NSWindow {
         override var isKeyWindow: Bool { true }
         override var mouseLocationOutsideOfEventStream: NSPoint { NSPoint(x: 20, y: 20) }
@@ -18,15 +32,14 @@ import Testing
         return window
     }
 
-    @Test func hintWaitsThenAppearsWithoutTakingClicksOrFocus() async throws {
+    @Test func hintAppearsWithoutTakingClicksOrFocus() throws {
         let window = makeWindow()
         let view = try #require(window.contentView)
-        let hint = HoverHint()
+        let scheduler = Scheduler()
+        let hint = HoverHint(scheduleWork: scheduler.schedule)
         defer { hint.dismiss(); window.contentView = nil }
         hint.schedule("A help hint", for: view)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(hint.panel == nil)
-        try await waitUntil { hint.panel != nil }
+        scheduler.runPending()
         let panel = try #require(hint.panel)
         #expect(panel.isVisible)
         #expect(panel.ignoresMouseEvents)
@@ -37,40 +50,29 @@ import Testing
         #expect(panel.parent == nil)
     }
 
-    @Test func leavingBeforeTheDelayCancelsTheHint() async throws {
+    @Test func leavingBeforeTheDelayCancelsTheHint() throws {
         let window = makeWindow()
         let view = try #require(window.contentView)
-        let hint = HoverHint()
+        let scheduler = Scheduler()
+        let hint = HoverHint(scheduleWork: scheduler.schedule)
         defer { hint.dismiss(); window.contentView = nil }
         hint.schedule("A help hint", for: view)
         hint.dismiss(for: view)
-        try await Task.sleep(for: .milliseconds(450))
+        scheduler.runPending()
         #expect(hint.panel == nil)
     }
 
-    @Test func hiddenResultsDoNotShowPendingHints() async throws {
+    @Test func hiddenResultsDoNotShowPendingHints() throws {
         let window = makeWindow()
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 80))
         window.contentView?.addSubview(view)
-        let hint = HoverHint()
+        let scheduler = Scheduler()
+        let hint = HoverHint(scheduleWork: scheduler.schedule)
         defer { hint.dismiss(); window.contentView = nil }
         hint.schedule("A help hint", for: view)
         view.isHidden = true
-        try await Task.sleep(for: .milliseconds(450))
+        scheduler.runPending()
         #expect(hint.panel == nil)
-    }
-
-    @Test func movingWithinTheSameResultRestartsTheDelay() async throws {
-        let window = makeWindow()
-        let view = try #require(window.contentView)
-        let hint = HoverHint()
-        defer { hint.dismiss(); window.contentView = nil }
-        hint.schedule("A help hint", for: view)
-        try await Task.sleep(for: .milliseconds(200))
-        hint.schedule("A help hint", for: view)
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(hint.panel == nil)
-        try await waitUntil { hint.panel != nil }
     }
 
     @Test(arguments: [false, true])

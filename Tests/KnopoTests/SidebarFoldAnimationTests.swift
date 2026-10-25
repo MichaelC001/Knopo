@@ -51,18 +51,14 @@ import KnopoCore
             let startY = following.convert(.zero, to: host).y
             try clickHeader(in: window, host: host)
             #expect(nav.rightPanes[0].collapsed == collapsed)
-            var positions: [CGFloat] = []
-            for _ in 0..<12 {
-                try await Task.sleep(for: .milliseconds(20))
-                window.layoutIfNeeded()
-                positions.append(following.convert(.zero, to: host).y)
-            }
-            let endY = try #require(positions.last)
+            window.layoutIfNeeded()
+            let firstY = following.convert(.zero, to: host).y
+            try await settle(window)
+            window.layoutIfNeeded()
+            let endY = following.convert(.zero, to: host).y
             #expect(abs(startY - endY) > 50)
-            let intermediate = positions.filter {
-                $0 > min(startY, endY) + 1 && $0 < max(startY, endY) - 1
-            }
-            #expect(intermediate.isEmpty == (mode != .on))
+            // Check before yielding. A slow runner can miss every intermediate frame.
+            #expect((abs(firstY - endY) > 1) == (mode == .on))
             #expect(tables(host).count == (collapsed ? 1 : 2))
             #expect(window.firstResponder === editor)
             #expect(editor.selectedRange() == NSRange(location: 2, length: 3))

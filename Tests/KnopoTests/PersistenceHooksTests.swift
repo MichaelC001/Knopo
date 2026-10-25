@@ -33,7 +33,7 @@ import KnopoCore
     }
 
     /// The wiring, not just the method: deactivating the app has to trigger it.
-    @Test func deactivatingTheAppFlushes() async throws {
+    @Test func deactivatingTheAppFlushes() throws {
         let root = graph()
         defer { try? FileManager.default.removeItem(at: root) }
         let manager = GraphManager()
@@ -45,8 +45,8 @@ import KnopoCore
 
         NotificationCenter.default.post(
             name: NSApplication.didResignActiveNotification, object: nil)
-        try await Task.sleep(nanoseconds: 200_000_000)
-
+        // The notification flushes synchronously. Yielding could let the debounce
+        // save the page and hide a broken notification hook.
         let saved = try String(
             contentsOf: app.store.fileURL(forPageNamed: "Notes"), encoding: .utf8)
         #expect(saved.contains("flushed on deactivate"))
@@ -65,11 +65,17 @@ import KnopoCore
 
         var doc = try store.createPage(named: "Notes")
         let url = store.fileURL(forPageNamed: "Notes")
-        // Keep committing, as typing does, for longer than the ceiling.
-        for keystroke in 0..<12 {
+        // Keep typing until a save lands. Stopping first would let a ceiling
+        // that incorrectly restarts on every edit pass this test.
+        var keystroke = 0
+        try await waitUntil {
+            if (try? String(contentsOf: url, encoding: .utf8))?.contains("typing") == true {
+                return true
+            }
             doc.blocks[0].content = "typing \(keystroke)"
             app.commit(doc)
-            try await Task.sleep(nanoseconds: 60_000_000)
+            keystroke += 1
+            return false
         }
 
         // Written at all, with a 60 s debounce that cannot have elapsed: only the
@@ -91,7 +97,10 @@ import KnopoCore
         var doc = try store.createPage(named: "Notes")
         doc.blocks[0].content = "settled after a pause"
         app.commit(doc)
-        try await Task.sleep(nanoseconds: 400_000_000)
+        try await waitUntil {
+            (try? String(contentsOf: store.fileURL(forPageNamed: "Notes"),
+                         encoding: .utf8))?.contains("settled after a pause") == true
+        }
 
         let saved = try String(
             contentsOf: store.fileURL(forPageNamed: "Notes"), encoding: .utf8)

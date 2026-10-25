@@ -38,12 +38,15 @@ import KnopoCore
         let (cell, window) = cellInWindow()
         window.orderFront(nil)
         defer { cell.cancelFlash(); window.orderOut(nil) }
-        var fadeStarted = false
-        cell.flash(animationsEnabled: { fadeStarted = true; return enabled })
+        var fadeStarted: ContinuousClock.Instant?
+        cell.flash(animationsEnabled: { fadeStarted = .now; return enabled })
         #expect(cell.isFlashing)
-        try await waitUntil { fadeStarted }
-        if enabled { #expect(cell.isFlashing) }
-        else { try await waitUntil { !cell.isFlashing } }
+        try await waitUntil { fadeStarted != nil && !cell.isFlashing }
+        // Check the completed fade. A delayed poll can miss its entire lifetime.
+        if enabled {
+            let started = try #require(fadeStarted)
+            #expect(ContinuousClock.now - started >= .milliseconds(900))
+        }
     }
 
     /// A redone reveal flashes the same cell again — one overlay, not a stack of

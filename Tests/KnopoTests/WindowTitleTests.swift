@@ -15,9 +15,9 @@ import Testing
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
-        for _ in 0..<6 {
+        try await waitUntil {
             window.layoutIfNeeded()
-            try await Task.sleep(for: .milliseconds(30))
+            return window.title == graphName && window.titleVisibility == .hidden
         }
         return window
     }
@@ -34,8 +34,8 @@ import Testing
         let window = try await configuredWindow(graphName: "Summit 2026")
         window.title = "Knopo"
         window.titleVisibility = .visible
-        // No SwiftUI update follows: nothing about the view has changed.
-        try await Task.sleep(for: .milliseconds(200))
+        // The observer corrects this synchronously. Queued setup work must not
+        // hide the title for it and mask a broken observer.
         #expect(window.titleVisibility == .hidden)
     }
 }
