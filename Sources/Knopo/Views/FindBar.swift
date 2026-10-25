@@ -3,9 +3,8 @@ import SwiftUI
 
 /// In-page find bar (Cmd+F). Edits `Navigator`'s find state; the outline
 /// controller does the matching, highlighting, and scrolling, and writes the
-/// match count back. Built from native AppKit controls (a real `NSSearchField`
-/// and an `NSSegmentedControl` stepper) on a toolbar-material strip, so it reads
-/// like the system find bar and manages first responder itself.
+/// match count back. The search field manages first responder; the navigation
+/// group uses the system's button styling.
 struct FindBar: View {
     @EnvironmentObject var nav: Navigator
 
@@ -118,43 +117,18 @@ struct FindSearchField: NSViewRepresentable {
     }
 }
 
-/// A two-segment `NSSegmentedControl` (momentary) for previous / next match —
-/// the native stepper look, replacing two borderless SwiftUI buttons.
-struct FindStepper: NSViewRepresentable {
+struct FindStepper: View {
     var enabled: Bool
     var onPrevious: () -> Void
     var onNext: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeNSView(context: Context) -> NSSegmentedControl {
-        let seg = NSSegmentedControl(
-            images: [
-                NSImage(systemSymbolName: "chevron.up",
-                        accessibilityDescription: L("Previous match"))!,
-                NSImage(systemSymbolName: "chevron.down",
-                        accessibilityDescription: L("Next match"))!,
-            ],
-            trackingMode: .momentary,
-            target: context.coordinator,
-            action: #selector(Coordinator.clicked(_:))
-        )
-        seg.segmentStyle = .rounded
-        return seg
-    }
-
-    func updateNSView(_ seg: NSSegmentedControl, context: Context) {
-        context.coordinator.parent = self
-        seg.setEnabled(enabled, forSegment: 0)
-        seg.setEnabled(enabled, forSegment: 1)
-    }
-
-    final class Coordinator: NSObject {
-        var parent: FindStepper
-        init(_ parent: FindStepper) { self.parent = parent }
-
-        @objc func clicked(_ sender: NSSegmentedControl) {
-            sender.selectedSegment == 0 ? parent.onPrevious() : parent.onNext()
+    var body: some View {
+        ControlGroup {
+            Button("Previous match", systemImage: "chevron.up", action: onPrevious)
+            Button("Next match", systemImage: "chevron.down", action: onNext)
         }
+        .controlGroupStyle(.navigation)
+        .labelStyle(.iconOnly)
+        .disabled(!enabled)
     }
 }

@@ -58,23 +58,11 @@ struct AllPagesView: View {
                 }
             }
             .padding(20)
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Filter pages…", text: $filter)
-                    .textFieldStyle(.plain)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: .textBackgroundColor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                    )
-            )
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
+            PageFilterField(text: $filter)
+                .frame(maxWidth: .infinity)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
             List {
                 if let flat = groups.first(where: { $0.key.isEmpty })?.value {
                     pageSection("Pages", id: .pages, listings: flat)
@@ -206,6 +194,39 @@ struct AllPagesView: View {
             nav.navigateToNewPage(named: newPageName)
         } catch {
             NSAlert(for: error).runModal()
+        }
+    }
+}
+
+private struct PageFilterField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = L("Filter pages…")
+        field.sendsSearchStringImmediately = true
+        field.sendsWholeSearchString = false
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchChanged(_:))
+        field.stringValue = text
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: PageFilterField
+        init(_ parent: PageFilterField) { self.parent = parent }
+
+        @objc func searchChanged(_ sender: NSSearchField) {
+            parent.text = sender.stringValue
         }
     }
 }
