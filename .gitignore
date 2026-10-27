@@ -12,6 +12,7 @@ build/
 CLAUDE.md
 AGENTS.md
 scripts/*review*.sh
+scripts/macos15-smoke.sh
 
 # Temp docs
 workdocs/

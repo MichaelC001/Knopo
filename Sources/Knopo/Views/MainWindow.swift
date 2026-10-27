@@ -64,12 +64,10 @@ struct MainWindow: View {
         // Native-style Back/Forward in the toolbar's leading navigation area
         // (like Finder/Safari), mirroring the ⌘[ / ⌘] commands.
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                NavigationHistoryControl(
-                    backTitles: backTitles, forwardTitles: forwardTitles,
-                    goBack: { nav.goBack(steps: $0) },
-                    goForward: { nav.goForward(steps: $0) })
-            }
+            NavigationHistoryItems(
+                backTitles: backTitles, forwardTitles: forwardTitles,
+                goBack: { nav.goBack(steps: $0) },
+                goForward: { nav.goForward(steps: $0) })
             ToolbarItem(placement: .navigation) {
                 GraphTitleSettingsControl(
                     graphName: graphName, openSettings: openGraphSettings)
@@ -254,35 +252,71 @@ private extension ToolbarContent {
     }
 }
 
-/// Let the toolbar choose native navigation sizing and appearance on each OS.
-private struct NavigationHistoryControl: View {
+/// Back/Forward with a history menu on press-and-hold. On macOS 26 and later
+/// the toolbar styles a navigation control group natively. Older systems draw
+/// that group with small, tightly spaced chevrons. There each button gets its
+/// own toolbar item, like in Finder and Safari.
+private struct NavigationHistoryItems: ToolbarContent {
     let backTitles: [String]
     let forwardTitles: [String]
     let goBack: (Int) -> Void
     let goForward: (Int) -> Void
 
-    var body: some View {
-        ControlGroup {
-            Menu {
-                historyItems(backTitles, navigate: goBack)
-            } label: {
-                Label("Back", systemImage: "chevron.backward")
-            } primaryAction: {
-                goBack(1)
+    var body: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .navigation) {
+                ControlGroup {
+                    backMenu(icon: Image(systemName: "chevron.backward"))
+                    forwardMenu(icon: Image(systemName: "chevron.forward"))
+                }
+                .controlGroupStyle(.navigation)
+                .labelStyle(.iconOnly)
+                .menuIndicator(.hidden)
             }
-            .disabled(backTitles.isEmpty)
-            Menu {
-                historyItems(forwardTitles, navigate: goForward)
-            } label: {
-                Label("Forward", systemImage: "chevron.forward")
-            } primaryAction: {
-                goForward(1)
+        } else {
+            ToolbarItem(placement: .navigation) {
+                backMenu(icon: Self.backSymbol)
+                    .menuIndicator(.hidden)
             }
-            .disabled(forwardTitles.isEmpty)
+            ToolbarItem(placement: .navigation) {
+                forwardMenu(icon: Self.forwardSymbol)
+                    .menuIndicator(.hidden)
+            }
         }
-        .controlGroupStyle(.navigation)
-        .labelStyle(.iconOnly)
-        .menuIndicator(.hidden)
+    }
+
+    // Built once. A new NSImage on every pass would make SwiftUI redraw the icons.
+    private static let backSymbol = toolbarSymbol("chevron.backward")
+    private static let forwardSymbol = toolbarSymbol("chevron.forward")
+
+    /// AppKit toolbars before macOS 26 draw symbols at the large scale. SwiftUI
+    /// toolbar items there use the medium scale unless the image carries its own.
+    private static func toolbarSymbol(_ name: String) -> Image {
+        let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(scale: .large))
+        return symbol.map { Image(nsImage: $0) } ?? Image(systemName: name)
+    }
+
+    private func backMenu(icon: Image) -> some View {
+        Menu {
+            historyItems(backTitles, navigate: goBack)
+        } label: {
+            Label { Text("Back") } icon: { icon }
+        } primaryAction: {
+            goBack(1)
+        }
+        .disabled(backTitles.isEmpty)
+    }
+
+    private func forwardMenu(icon: Image) -> some View {
+        Menu {
+            historyItems(forwardTitles, navigate: goForward)
+        } label: {
+            Label { Text("Forward") } icon: { icon }
+        } primaryAction: {
+            goForward(1)
+        }
+        .disabled(forwardTitles.isEmpty)
     }
 
     private func historyItems(_ titles: [String], navigate: @escaping (Int) -> Void) -> some View {
